@@ -29,6 +29,7 @@ class Signal:
     entry_high: Optional[float] = None   # set when an entry range is given
     sl: Optional[float] = None
     tps: List[Optional[float]] = field(default_factory=list)  # None = open TP
+    trade_id: Optional[str] = None       # channel's own trade number (e.g. "Номер сделки"), for dedupe
 
 
 @dataclass
@@ -43,8 +44,40 @@ def _f(s: str) -> float:
     return float(s.replace(",", "."))
 
 
+# Russian terms -> English, applied (on upper-cased text) BEFORE the non-ASCII strip.
+RU_MAP = [
+    (r"НОМЕР\s+СДЕЛКИ\s*:?\s*\d+", " "),                  # trade number is not a price
+    (r"СДЕЛКА\s+НА\s+\d+(?:[.,]\d+)?\s*%\s*РИСКА\.?", " "),  # info only; user's lot/risk settings apply
+    (r"ТИП\s+ОРДЕРА", " "),                                   # just a label
+    (r"ТОЧКА\s+ВХОДА|(?<![А-ЯЁ])ВХОД(?![А-ЯЁ])", " ENTRY "),
+    (r"СТОП[\s-]*ЛОСС", " SL "),
+    (r"ТЕЙК[\s-]*ПРОФИТ", " TP "),
+    (r"ПОКУПКА|ПОКУПАТЬ|КУПИТЬ", " BUY "),
+    (r"ПРОДАЖА|ПРОДАВАТЬ|ПРОДАТЬ", " SELL "),
+]
+RU_TRADE_ID_RE = re.compile(r"НОМЕР\s+СДЕЛКИ\s*:?\s*(\d+)", re.I)
+# analysis posts with an entry zone, not executable signals
+RU_ANALYSIS_RE = re.compile(r"В\s+ЗОНЕ|СТОП\s*/\s*ОТМЕНА", re.I)
+RANGE_RE = re.compile(r"\d+(?:[.,]\d+)?\s*[\u2013\u2014-]\s*\d+(?:[.,]\d+)?")
+CYR_RE = re.compile(r"[А-Яа-яЁё]")
+
+
+def trade_id(text: str) -> Optional[str]:
+    m = RU_TRADE_ID_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def is_ru_analysis(text: str) -> bool:
+    """Russian analysis post giving an entry zone (range / 'в зоне' / 'Стоп / отмена')."""
+    if not CYR_RE.search(text or ""):
+        return False
+    return bool(RU_ANALYSIS_RE.search(text) or RANGE_RE.search(text))
+
+
 def normalise(text: str) -> str:
     t = text.upper()
+    for pat, rep in RU_MAP:
+        t = re.sub(pat, rep, t)
     t = t.replace("\u2013", "-").replace("\u2014", "-").replace("：", ":")
     t = re.sub(r"[^\x00-\x7F]+", " ", t)          # strip emojis
     t = t.replace("TAKE PROFIT", "TP").replace("TAKEPROFIT", "TP").replace("T/P", "TP")
@@ -121,6 +154,8 @@ def _sl_tps(t: str):
 
 
 def parse_signal(text: str) -> Optional[Signal]:
+    if is_ru_analysis(text):
+        return None
     t = normalise(text)
     sm = SIDE_RE.search(t)
     if not sm:
@@ -152,7 +187,7 @@ def parse_signal(text: str) -> Optional[Signal]:
     if entry is not None and otype == "MARKET" and re.search(r"\b(NOW|MARKET|CMP|CURRENT)\b", head) and entry_high is None:
         pass  # market with reference price
     return Signal(side=side, symbol=symbol, order_type=otype, entry=entry,
-                  entry_high=entry_high, sl=sl, tps=tps)
+                  entry_high=entry_high, sl=sl, tps=tps, trade_id=trade_id(text))
 
 
 def parse(text: str) -> Optional[Union[Signal, Command]]:
@@ -161,6 +196,8 @@ def parse(text: str) -> Optional[Union[Signal, Command]]:
     s = parse_signal(text)
     if s:
         return s
+    if is_ru_analysis(text):
+        return None   # analysis post: don't let it fall through as a command
     return parse_command(text)
 
 
