@@ -19,6 +19,8 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
+AppMutex=Local\SignalPilot-SingleInstance
+CloseApplications=yes
 UninstallDisplayIcon={app}\{#AppName}.exe
 
 [Tasks]
@@ -34,5 +36,7 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppName}.exe"; Tasks: deskt
 
 [Run]
 Filename: "{app}\{#AppName}.exe"; Description: "Open {#AppName} now"; Flags: nowait postinstall skipifsilent
+; After an automatic (silent) update, reopen the app.
+Filename: "{app}\{#AppName}.exe"; Flags: nowait; Check: WizardSilent
 
 ; Customer data (login, settings, trades) lives in %APPDATA%\SignalPilot and is kept on uninstall and upgrade.

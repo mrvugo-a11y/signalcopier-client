@@ -405,6 +405,50 @@ class App:
         else:
             self.check_licence_async()
             if cfg.get("start_copying_on_launch"): root.after(800, self.start)
+        root.after(5000, self.check_updates)
+
+    # -- automatic updates
+    def check_updates(self):
+        from copier import updater
+        def run():
+            try: r = updater.newer_available(C.load())
+            except Exception: r = None
+            if r: self.q.put(("call", lambda: self.offer_update(*r)))
+        if not getattr(self, "_update_offered", False):
+            threading.Thread(target=run, daemon=True).start()
+        self.root.after(updater.CHECK_EVERY_MS, self.check_updates)
+
+    def offer_update(self, version, url):
+        if getattr(self, "_update_offered", False): return
+        self._update_offered = True
+        if not messagebox.askyesno("Update", f"A new version is ready ({version}). Update now?\n\n"
+                                   "Your settings, licence and Telegram login are kept.", parent=self.root):
+            self._update_offered = False; return
+        self.log(f"Downloading {BRAND_NAME} {version}...")
+        from copier import updater
+        def run():
+            try:
+                path = updater.download(url)
+                self.q.put(("call", lambda: self._install_update(path)))
+            except Exception as e:
+                self._update_offered = False
+                self.log(f"Update download failed: {e}")
+        threading.Thread(target=run, daemon=True).start()
+
+    def _install_update(self, path):
+        from copier import updater
+        try:
+            updater.launch_installer(path)
+        except Exception as e:
+            self._update_offered = False; self.log(f"Could not start the update: {e}"); return
+        self.log("Installing the update. SignalPilot will reopen by itself in a moment.")
+        if self.engine and self.engine.running(): self.engine.stop()
+        if self.tray: self.tray.stop()
+        global _instance_handle
+        if sys.platform == "win32" and _instance_handle:
+            try: import ctypes; ctypes.windll.kernel32.CloseHandle(_instance_handle); _instance_handle = None
+            except Exception: pass
+        self.root.after(800, self.root.destroy)
 
     # -- thread safe helpers
     def log(self, msg): self.q.put(("log", f"{datetime.now():%H:%M:%S}  {msg}"))
