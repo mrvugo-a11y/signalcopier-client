@@ -71,6 +71,26 @@ class TestSingleClient(unittest.TestCase):
         self.assertFalse(any("Problem" in l for l in logs), logs)
         self.assertEqual(open(E.string_path()).read(), "SESSION")
 
+    def test_channels_while_copying_no_stop_no_crash(self):
+        logs = []
+        eng = E.Engine(logs.append, None); eng.start()
+        self.assertTrue(self._wait(lambda: any("Copying is ON" in l for l in logs)), logs)
+        chans = E.safe_list_channels({}, None, logs.append)
+        self.assertEqual(chans, [(-1001, "Gold")])
+        self.assertTrue(eng.running(), "Channels must not stop copying")
+        self.assertEqual(len(FakeClient.instances[0].handlers), 2)
+        eng.stop(); self.assertTrue(self._wait(lambda: not eng.running()))
+        self.assertEqual(E.safe_list_channels({}, None, logs.append), [(-1001, "Gold")])   # stop then list
+        self.assertEqual(len(FakeClient.instances), 1)
+
+    def test_channels_error_is_logged_not_raised(self):
+        logs = []
+        async def boom(self): raise RuntimeError("network gone")
+        old = FakeClient.get_me; FakeClient.get_me = boom
+        try: self.assertIsNone(E.safe_list_channels({}, None, logs.append))
+        finally: FakeClient.get_me = old
+        self.assertTrue(any("network gone" in l for l in logs))
+
     def test_reconnects_same_client_after_drop(self):
         E.login_and_list({}, None); FakeClient.instances[0].connected = False
         E.login_and_list({}, None)

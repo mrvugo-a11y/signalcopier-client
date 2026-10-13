@@ -474,7 +474,9 @@ class App:
                 elif kind == "ask":
                     prompt, secret, box, parent = val
                     box.put(simpledialog.askstring("Telegram login", prompt, show="*" if secret else None, parent=parent or self.root))
-                elif kind == "call": val()
+                elif kind == "call":
+                    try: val()
+                    except Exception as e: self._write_log(f"Something went wrong: {e}")
         except queue.Empty:
             pass
         if self.engine and not self.engine.running() and str(self.btn_stop["state"]) == "normal":
@@ -617,37 +619,33 @@ class App:
         cfg = C.load()
         if C.needs_api_credentials(cfg) or not cfg.get("telegram_phone"):
             Wizard(self); return
-        was_running = bool(self.engine and self.engine.running())
-        if was_running:
-            if not messagebox.askyesno("Channels", "Copying pauses for a moment while the channel list loads. Continue?"): return
         self.log("Loading your Telegram channels...")
         def work():
-            if was_running:
-                self.engine.stop()
-                while self.engine.running(): threading.Event().wait(0.2)
-            from copier.engine import login_and_list
             try:
-                _, chans = login_and_list(cfg, self.ask)
-                self.q.put(("call", lambda: self.channel_window(chans, was_running)))
-            except Exception as e:
-                from copier.engine import friendly_error
-                self.log(f"Could not load channels: {friendly_error(e)}")
-                if was_running: self.q.put(("call", self.start))
+                from copier.engine import safe_list_channels
+                chans = safe_list_channels(cfg, self.ask, self.log)
+                if chans is not None: self.q.put(("call", lambda: self.channel_window(chans)))
+            except BaseException as e:      # never let the Channels path take the app down
+                self.log(f"Could not load channels: {e}")
         threading.Thread(target=work, daemon=True).start()
 
-    def channel_window(self, chans, restart):
-        cfg = C.load()
-        w = tk.Toplevel(self.root); w.title("Tick the channels to copy"); w.geometry("480x540"); w.transient(self.root)
-        p = ChannelPicker(w, chans, cfg.get("channels", {})); p.pack(fill="both", expand=True, padx=8, pady=8)
-        def save():
-            W.apply_channel_selection(cfg, chans, p.selected()); C.save(cfg)
-            self.log(f"Saved {len(cfg['channels'])} channel(s)."); w.destroy()
-            if restart: self.start()
-        def close():
-            w.destroy()
-            if restart: self.start()
-        w.protocol("WM_DELETE_WINDOW", close)
-        ttk.Button(w, text="Save", command=save).pack(side="bottom", pady=6)
+    def channel_window(self, chans):
+        """Channels work while copying (one shared Telegram client). Copying only restarts if the ticked list changed."""
+        try:
+            cfg = C.load()
+            w = tk.Toplevel(self.root); w.title("Tick the channels to copy"); w.geometry("480x540"); w.transient(self.root)
+            p = ChannelPicker(w, chans, cfg.get("channels", {})); p.pack(fill="both", expand=True, padx=8, pady=8)
+            def save():
+                try:
+                    W.apply_channel_selection(cfg, chans, p.selected()); C.save(cfg)
+                    self.log(f"Saved {len(cfg['channels'])} channel(s)."); w.destroy()
+                    if self.engine and self.engine.running(): self.settings_saved(cfg)
+                except Exception as e:
+                    self.log(f"Could not save channels: {e}")
+            w.protocol("WM_DELETE_WINDOW", w.destroy)
+            ttk.Button(w, text="Save", command=save).pack(side="bottom", pady=6)
+        except Exception as e:
+            self.log(f"Could not show channels: {e}")
 
     # -- tray (optional: needs pystray and Pillow)
     def _on_minimise(self, ev):

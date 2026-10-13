@@ -176,9 +176,19 @@ async def _login_and_list(cfg, ask, phone=None):
     return name, out
 
 
-def login_and_list(cfg, ask, phone=None):
+def login_and_list(cfg, ask, phone=None, timeout=None):
     """Blocking (call from a worker thread). Logs in on the shared client and returns (my_name, [(id, name), ...])."""
-    return service().run(_login_and_list(cfg, ask, phone))
+    return service().run(_login_and_list(cfg, ask, phone), timeout)
+
+
+def safe_list_channels(cfg, ask, log, timeout=300):
+    """Channel list for the Channels button. Works while copying (shared client). Never raises: logs and returns None."""
+    try:
+        return login_and_list(cfg, ask, timeout=timeout)[1]
+    except BaseException as e:
+        try: log(f"Could not load channels: {friendly_error(e) or type(e).__name__}")
+        except Exception: pass
+        return None
 
 
 def list_channels(cfg, ask):
