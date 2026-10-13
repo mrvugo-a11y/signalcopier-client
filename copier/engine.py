@@ -264,6 +264,7 @@ class Engine:
             self.status("telegram", True, "Connected")
             self.log("Copying is ON. Watching: " + ", ".join(v.get("name", k) for k, v in chans.items()))
             while not self.stop_event.wait(5):
+                self._check_break_even()
                 if not self.client.is_connected():      # network dropped: reconnect the same client
                     try: svc.run(svc.get_client(self.cfg), 60)
                     except Exception as e: self.log(f"Telegram reconnect failed, retrying: {friendly_error(e)}")
@@ -287,8 +288,23 @@ class Engine:
             tickets = self.ex.open_signal(sig, st)
         if tickets:
             self.store.put(chat_id, msg_id, {"symbol": sig.symbol, "side": sig.side, "sl": sig.sl,
-                                             "tps": sig.tps, "tickets": tickets})
+                                             "tps": sig.tps, "tickets": tickets,
+                                             "tp1": getattr(self.ex, "last_tp1", None)})
             self.store.mark_trade(chat_id, tid, msg_id)
+
+    def _check_break_even(self):
+        """Break even after TP1 (only when the customer ticked it for that channel)."""
+        if not hasattr(self, "_be_warned"): self._be_warned = set()
+        try:
+            for key, rec in list(self.store.data.get("signals", {}).items()):
+                if rec.get("be_done") or not rec.get("tickets"): continue
+                chat_id, msg_id = key.rsplit(":", 1)
+                if not C.channel_settings(self.cfg, chat_id).get("be_after_tp1", False): continue
+                with self.mt5_lock:
+                    done = self.ex.check_break_even(rec, self._st(chat_id), self._be_warned)
+                if done: self.store.update(chat_id, msg_id, be_done=True)
+        except Exception as e:
+            self.log(f"Break even check failed: {e}")
 
     def _apply(self, chat_id, msg_id, cmd, st):
         rec = self.store.get(chat_id, msg_id) if msg_id else None

@@ -145,6 +145,7 @@ class Executor:
         type_map = {("BUY", "MARKET"): mt5.ORDER_TYPE_BUY, ("SELL", "MARKET"): mt5.ORDER_TYPE_SELL,
                     ("BUY", "LIMIT"): mt5.ORDER_TYPE_BUY_LIMIT, ("SELL", "LIMIT"): mt5.ORDER_TYPE_SELL_LIMIT,
                     ("BUY", "STOP"): mt5.ORDER_TYPE_BUY_STOP, ("SELL", "STOP"): mt5.ORDER_TYPE_SELL_STOP}
+        self.last_tp1 = tps[0] if tps and tps[0] else None   # TP1 price, used by the break even watcher
         tickets = []
         for i, tp in enumerate(chosen, 1):
             req = {"action": mt5.TRADE_ACTION_DEAL if otype == "MARKET" else mt5.TRADE_ACTION_PENDING,
@@ -200,6 +201,81 @@ class Executor:
     def _cancel(self, o):
         if self._send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket}):
             self.log(f"Pending order {o.ticket} cancelled")
+
+    # ---------- break even after TP1 ----------
+    def _closed_at_tp(self, ticket, tp1):
+        """True if this position is closed and its closing deal was a take profit (or at the TP1 price)."""
+        try:
+            deals = mt5.history_deals_get(position=ticket) or []
+        except Exception:
+            deals = []
+        reason_tp = getattr(mt5, "DEAL_REASON_TP", 5)
+        entry_out = getattr(mt5, "DEAL_ENTRY_OUT", 1)
+        for d in deals:
+            if getattr(d, "entry", None) != entry_out: continue
+            if getattr(d, "reason", None) == reason_tp: return True
+            if tp1:
+                info = mt5.symbol_info(d.symbol); pt = info.point if info else 0
+                if abs(d.price - tp1) <= max(pt * 2, 1e-9): return True
+        return False
+
+    def _move_to_be(self, p, warned):
+        """Moves one position's stop loss to its entry price, respecting the broker's minimum stop distance.
+        Returns True when done (or nothing to do), False to try again later."""
+        entry = p.price_open
+        buy = p.type == mt5.POSITION_TYPE_BUY
+        if p.sl and ((buy and p.sl >= entry) or (not buy and p.sl <= entry)):
+            return True                                       # already at break even or better
+        info = mt5.symbol_info(p.symbol); tick = mt5.symbol_info_tick(p.symbol)
+        pt = info.point; digits = info.digits
+        min_dist = (getattr(info, "trade_stops_level", 0) or 0) * pt
+        now = tick.bid if buy else tick.ask
+        gap = (now - entry) if buy else (entry - now)
+        if gap < min_dist or gap <= 0:
+            if p.ticket not in warned:
+                warned.add(p.ticket)
+                why = ("the price is too close to the entry for your broker's minimum stop distance"
+                       if gap > 0 else "the price is now on the wrong side of the entry")
+                self.log(f"Could not move the stop loss of trade {p.ticket} ({p.symbol}) to break even yet, because {why}. "
+                         "The copier will keep trying.")
+            return False
+        req = {"action": mt5.TRADE_ACTION_SLTP, "position": p.ticket, "symbol": p.symbol,
+               "sl": round(entry, digits), "tp": p.tp}
+        r = mt5.order_send(req)
+        if r is None or r.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+            if p.ticket not in warned:
+                warned.add(p.ticket)
+                why = r.comment if r is not None else "no answer from MetaTrader 5"
+                self.log(f"Your broker refused to move the stop loss of trade {p.ticket} ({p.symbol}) to break even: {why}. "
+                         "The copier will keep trying.")
+            return False
+        self.log(f"TP1 was hit, so the stop loss of trade {p.ticket} ({p.symbol}) was moved to break even at {req['sl']}")
+        return True
+
+    def check_break_even(self, rec, st, warned=None):
+        """Called regularly for each copied signal. Returns True when this signal needs no more checking.
+        TP1 counts as hit when the TP1 trade closed at its take profit, or the price reached TP1."""
+        if warned is None: warned = set()
+        tickets = rec.get("tickets") or []
+        tp1 = rec.get("tp1")
+        if "tp1" not in rec and rec.get("tps") and not st.get("reverse_signals"):
+            tp1 = rec["tps"][0]                                 # signals copied before version 1.3.1
+        if not tickets: return True
+        positions = [p for p in (self._position(t) for t in tickets) if p]
+        first_open = bool(positions and positions[0].ticket == tickets[0])
+        hit = False
+        if not first_open and not self._order(tickets[0]):
+            if self._closed_at_tp(tickets[0], tp1): hit = True
+            elif not positions: return True                    # everything closed, nothing to protect
+            elif not tp1: return True                          # TP1 trade closed another way and no price to watch
+        if not hit and tp1 and positions:
+            p = positions[0]; tick = mt5.symbol_info_tick(p.symbol)
+            buy = p.type == mt5.POSITION_TYPE_BUY
+            hit = (tick.bid >= tp1) if buy else (tick.ask <= tp1)
+        if not hit: return not positions and not any(self._order(t) for t in tickets)
+        rest = [p for p in positions if p.ticket != tickets[0] or len(tickets) == 1]
+        if not rest: return True
+        return all([self._move_to_be(p, warned) for p in rest])
 
     def apply(self, cmd: Command, tickets, st):
         positions = [p for p in (self._position(t) for t in tickets) if p]

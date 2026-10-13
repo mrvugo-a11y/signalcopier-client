@@ -9,7 +9,7 @@ DEFAULT_SETTINGS = {
     "default_sl_points": 0, "split_tps": True, "use_tps": [1, 2, 3, 4, 5],
     "max_spread_points": 50, "magic_number": 777001, "symbol_suffix": "",
     "symbol_map": {"GOLD": "XAUUSD"}, "pending_orders": True, "range_entry": "market",
-    "max_entry_distance_points": 0, "reverse_signals": False, "tp_hit_action": "move_sl_be",
+    "max_entry_distance_points": 0, "reverse_signals": False, "tp_hit_action": "move_sl_be", "be_after_tp1": False,
     "commands_without_reply_apply_to_last": True, "follow_edits": True,
     "max_open_trades": 20, "slippage_points": 20, "comment": "TGCopier",
 }

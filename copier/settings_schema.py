@@ -38,6 +38,8 @@ TRADE_FIELDS = [
     ("tp_hit_action", "When the channel says TP1 hit", "choice",
      [("move_sl_be", "Move stop loss to entry"), ("close_half", "Close half"), ("close_all", "Close everything"), ("none", "Do nothing")],
      "What to do with the remaining trades when the channel posts that a take profit was reached."),
+    ("be_after_tp1", "Move stop loss to break even after TP1 is hit", "bool", None,
+     "Ticked: as soon as TP1 is reached, the stop loss of the other trades from that signal moves to the entry price. Unticked: the copier never moves your stop loss by itself."),
     ("commands_without_reply_apply_to_last", "Plain commands act on the latest signal", "bool", None,
      "Ticked: a message like close that is not a reply acts on the newest signal of that channel."),
     ("follow_edits", "Follow edited signals", "bool", None,
