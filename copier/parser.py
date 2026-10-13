@@ -60,6 +60,10 @@ RU_TRADE_ID_RE = re.compile(r"НОМЕР\s+СДЕЛКИ\s*:?\s*(\d+)", re.I)
 RU_ANALYSIS_RE = re.compile(r"В\s+ЗОНЕ|СТОП\s*/\s*ОТМЕНА", re.I)
 RANGE_RE = re.compile(r"\d+(?:[.,]\d+)?\s*[\u2013\u2014-]\s*\d+(?:[.,]\d+)?")
 CYR_RE = re.compile(r"[А-Яа-яЁё]")
+# results-only reports (e.g. "по бесплатному сигналу закрылся в плюс ... Результат: +291.40 USD",
+# "забрали +299.00 USD", "Отработка аналитики"): informational, must never act on a trade
+RU_RESULT_RE = re.compile(r"ЗАКРЫЛ(?:СЯ|АСЬ|ИСЬ)?\s+(?:В\s+)?(?:ПЛЮС|МИНУС|ПРОФИТ|С\s+ПРОФИТОМ)|РЕЗУЛЬТАТ\s*:"
+                          r"|ЗАБРАЛИ|ОТРАБОТКА\s+АНАЛИТИКИ", re.I)
 
 
 def trade_id(text: str) -> Optional[str]:
@@ -72,6 +76,11 @@ def is_ru_analysis(text: str) -> bool:
     if not CYR_RE.search(text or ""):
         return False
     return bool(RU_ANALYSIS_RE.search(text) or RANGE_RE.search(text))
+
+
+def is_ru_result(text: str) -> bool:
+    """Russian results/performance report; never a trade instruction."""
+    return bool(RU_RESULT_RE.search(text or ""))
 
 
 def normalise(text: str) -> str:
@@ -196,6 +205,8 @@ def parse(text: str) -> Optional[Union[Signal, Command]]:
     s = parse_signal(text)
     if s:
         return s
+    if is_ru_result(text):
+        return None   # results report: informational only
     if is_ru_analysis(text):
         return None   # analysis post: don't let it fall through as a command
     return parse_command(text)
@@ -203,6 +214,8 @@ def parse(text: str) -> Optional[Union[Signal, Command]]:
 
 def parse_update(text: str) -> Optional[Command]:
     """For edits/replies that contain new SL/TP values without being a full signal."""
+    if is_ru_result(text) or is_ru_analysis(text):
+        return None   # reposted analysis / results report replying to a post is not a modification
     t = normalise(text)
     sl, tps = _sl_tps(t)
     if sl is not None or tps:

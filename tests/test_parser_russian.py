@@ -59,3 +59,25 @@ class RepostDedupeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# Real follow-up posts from t.me/signum_signal (results reports and reposted analysis); none may act.
+RESULT_POSTS = {'4695': '#NZDUSD\n по бесплатному сигналу закрылся в плюс\nНомер сделки:\n \n46362943\nРезультат:\n \n+291.40 USD\nТакие сделки показывают главное: дисциплина и точный вход дают результат.\nВ Premium-канале больше торговых идей и сопровождения по рынку.\n#Бесплатный_сигнал', '4696': '#NZDUSD\n по бесплатному сигналу закрылся в плюс\nНомер сделки:\n \n46380444\nРезультат:\n \n+301.00 USD\nТакие сделки показывают главное: дисциплина и точный вход дают результат.\nВ Premium-канале больше торговых идей и сопровождения по рынку.\n#Бесплатный_сигнал', '4705': '#NZDUSD\n по бесплатному сигналу закрылся в плюс\nНомер сделки:\n \n46403591\nРезультат:\n \n+298.00 USD\nТакие сделки показывают главное: дисциплина и точный вход дают результат.\nВ Premium-канале больше торговых идей и сопровождения по рынку.\n#Бесплатный_сигнал', '4660': '🔥\n Вот это да — мы же реально трейдеры!\nПо сигналу \n#NZDUSD\n (№\n46292748\n) забрали \n+299.00 USD\n \n✅\nВ платном канале Signum Premium — ещё больше таких сетапов каждый день.\nА ещё можно получать дополнительные бесплатные сигналы — напиши \n@Signum_manager_bot\n или жми кнопку ниже \n👇', '4673': '📈\n Profit! \n#USDCAD\n по нашему сигналу — \n+214.16 USD\nЭто был ticket \n46331324\n. В Premium ещё жарче.\nХочешь больше бесплатных — \n@Signum_manager_bot\n или нажми кнопку ниже.', '4843': 'Отработка аналитики \n✅\n  Больше сделок и работа в паре с трейдером по кнопке ниже\n👇', '4846': 'Отработка аналитики \n✅\n  Больше сделок и работа в паре с трейдером по кнопке ниже\n👇', '4972': 'XAUUSD: ПОКУПАТЬ  Текущая цена XAU/USD составляет 4267.31, и инструмент находится в зоне поддержки. Основной контекст на недельном графике показывает возможный разворот с текущего уровня.  Вход: покупка в зоне 4260–4280  Цели: TP1: 4350 TP2: 4450  Стоп / отмена:…'}
+
+
+class RussianFollowUpTests(unittest.TestCase):
+    def test_results_reports_do_nothing(self):
+        from copier.parser import parse_update
+        for pid, text in RESULT_POSTS.items():
+            with self.subTest(post=pid):
+                self.assertIsNone(parse(text))
+                self.assertIsNone(parse_update(text))
+
+    def test_reposted_analysis_reply_is_not_modify(self):
+        from copier.parser import parse_update
+        # t.me/signum_signal/4972 (reply to 4962): truncated analysis repost with TP1/TP2
+        self.assertIsNone(parse_update(RESULT_POSTS["4972"]))
+
+    def test_closed_in_plus_with_trade_number_not_close(self):
+        self.assertIsNone(parse("#NZDUSD по бесплатному сигналу закрылся в плюс\nНомер сделки: 46362943\nРезультат: +291.40 USD"))
+
