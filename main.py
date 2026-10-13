@@ -498,15 +498,52 @@ class App:
         self.set_status("licence", None, "Checking...")
         def run():
             cfg = C.load(); key, url = cfg.get("licence_key", ""), C.licence_url(cfg)
-            ok, msg, cached = licence.check_full(key, url)
-            self.set_status("licence", ok, msg if len(msg) < 60 else msg[:57] + "...")
-            if not ok: self.log(f"Licence problem: {msg}")
-            if then: self.q.put(("call", lambda: then(ok, msg)))
-            if ok and cached: self._licence_refresh(key, url)
+            ok, msg, follow = licence.check_full(key, url)
+            if ok is licence.WAITING:     # never confirmed on this computer: wait for the first answer
+                self.q.put(("call", lambda: self._wait_for_licence(key, url, then, blocking=True))); return
+            self._licence_result(ok, msg, then)
+            if follow == licence.WAIT: self.q.put(("call", lambda: self._wait_for_licence(key, url)))
+            elif follow == licence.REFRESH: self._licence_refresh(key, url)
         threading.Thread(target=run, daemon=True).start()
         if not getattr(self, "_licence_timer", False):
             self._licence_timer = True
             self.root.after(licence.RECHECK_HOURS * 3600 * 1000, self._licence_recheck)
+
+    def _licence_result(self, ok, msg, then=None):
+        self.set_status("licence", ok, msg if len(msg) < 60 else msg[:57] + "...")
+        if not ok: self.log(f"Licence problem: {msg}")
+        if then: self.q.put(("call", lambda: then(ok, msg)))
+
+    def _wait_for_licence(self, key, url, then=None, blocking=False):
+        """Server asleep or no internet: retry calmly in the background until it answers.
+        blocking=True (key never confirmed on this computer): Start waits (Stop cancels) and copying starts by itself once valid.
+        blocking=False (confirmed before): the app stays fully usable; only an actual rejection stops copying."""
+        w = getattr(self, "_licence_waiting", None)
+        if w:
+            if then: w["then"] = then
+            if blocking and not w["blocking"]:
+                w["blocking"] = True; self.btn_start["state"] = "disabled"; self.btn_stop["state"] = "normal"
+            return
+        w = self._licence_waiting = {"cancel": False, "then": then, "blocking": blocking}
+        self.set_status("licence", None, licence.CHECKING_MSG); self.log("Checking your licence in the background. This can take a minute if the server is waking up.")
+        if blocking: self.btn_start["state"] = "disabled"; self.btn_stop["state"] = "normal"
+        def status(msg): self.set_status("licence", None, "Still checking..."); self.log(msg)
+        def run():
+            r = licence.wait_for_server(key, url, cancelled=lambda: w["cancel"], status=status)
+            def done():
+                self._licence_waiting = None
+                if r is None:
+                    self.set_status("licence", None, "Not checked"); self.log("Stopped waiting for the licence check.")
+                    if w["blocking"] and not (self.engine and self.engine.running()): self.set_running(False)
+                    return
+                if w["blocking"] and not (self.engine and self.engine.running()): self.set_running(False)
+                self._licence_result(r[0], r[1], w["then"])
+                if not r[0]:
+                    if self.engine and self.engine.running():
+                        self.stop(); self.log("Copying stopped because of the licence.")
+                    if not w["then"]: messagebox.showerror("Licence", r[1], parent=self.root)
+            self.q.put(("call", done))
+        threading.Thread(target=run, daemon=True).start()
 
     def _licence_recheck(self):
         """Every RECHECK_HOURS while open, so long running copiers notice revocation or expiry."""
@@ -516,8 +553,10 @@ class App:
         self.root.after(licence.RECHECK_HOURS * 3600 * 1000, self._licence_recheck)
 
     def _licence_refresh(self, key, url):
-        """Quiet server check (runs on a worker thread). Stops copying only on a rejection, or once the grace has run out."""
-        ok, msg, rejected = licence.refresh(key, url)
+        """Quiet server check (worker thread). Stops copying only on an explicit rejection; beyond the grace it keeps waiting calmly."""
+        ok, msg, rejected, follow = licence.refresh(key, url)
+        if follow == licence.WAIT:
+            self.q.put(("call", lambda: self._wait_for_licence(key, url))); return
         self.set_status("licence", ok, msg if len(msg) < 60 else msg[:57] + "...")
         if ok: return
         self.log(f"Licence problem: {msg}")
@@ -547,6 +586,9 @@ class App:
         self.check_licence_async(go)
 
     def stop(self):
+        w = getattr(self, "_licence_waiting", None)
+        if w and w["blocking"] and not w["cancel"]:
+            w["cancel"] = True; w["then"] = None
         if self.engine and self.engine.running(): self.engine.stop(); self.log("Stopping...")
 
     def settings_saved(self, cfg):

@@ -6,7 +6,8 @@
 The last confirmed answer is cached in licence.dat (signed with an HMAC tied to this computer):
 - cache under CACHE_HOURS old and its expiry not passed -> OK at once, no network call (the app then refreshes quietly).
 - otherwise ask the server (60 s timeout, one retry after 10 s when it cannot be reached).
-- server unreachable -> still OK while the last confirmation is under GRACE_DAYS old and its expiry has not passed.
+- server unreachable -> still OK while the last confirmation is under GRACE_DAYS old and its expiry has not passed;
+  otherwise WAITING: the app shows "Checking licence..." and keeps retrying (wait_for_server) until the server answers.
 - an explicit rejection from the server always blocks and clears the cache.
 """
 import hashlib, hmac, json, os, platform, time, urllib.error, urllib.request, uuid
@@ -23,6 +24,12 @@ _SECRET = b"SignalPilot/licence-cache/v1/7f3a91c2e4b8"
 UNREACHABLE_MSG = "Could not reach the licence server. Check your internet and try again."
 
 OK, REJECTED, UNREACHABLE = "ok", "rejected", "unreachable"
+WAITING = None                      # check_full's ok value when the app should wait for the server
+CHECKING_MSG = "Checking licence..."
+WAIT_STEPS = (15, 30, 60)           # seconds between attempts, then every WAIT_EVERY
+WAIT_EVERY = 120
+HINT_AFTER = 600                    # gentle internet hint after about 10 minutes of waiting
+HINT_MSG = "Still checking your licence. Please check your internet connection."
 
 
 def machine_id():
@@ -100,17 +107,17 @@ def _ask(key, url):
         return json.loads(r.read().decode())
 
 
-def server_check(key, url, sleep=time.sleep):
+def server_check(key, url, sleep=time.sleep, attempts=2):
     """Asks the server. Returns (OK | REJECTED | UNREACHABLE, message). Updates or clears the cache."""
     ans = None
-    for attempt in range(2):
+    for attempt in range(attempts):
         try:
             ans = _ask(key, url)
             if not isinstance(ans, dict) or "valid" not in ans: raise ValueError("unexpected answer")
             break
         except Exception:
             ans = None
-            if attempt == 0: sleep(RETRY_DELAY)
+            if attempt < attempts - 1: sleep(RETRY_DELAY)
     if ans is None:
         return UNREACHABLE, UNREACHABLE_MSG
     if ans.get("valid"):
@@ -120,44 +127,76 @@ def server_check(key, url, sleep=time.sleep):
     return REJECTED, "Licence not accepted: " + str(ans.get("message", "rejected"))
 
 
+# follow-up the app should do after check_full / refresh
+REFRESH = "refresh"   # quietly ask the server once in the background
+WAIT = "wait"         # keep retrying in the background (wait_for_server) until the server answers
+
+
 def check_full(key, url, now=None, sleep=time.sleep):
-    """Returns (ok, message, from_cache). from_cache=True means the caller should refresh in the background."""
+    """Returns (ok, message, follow).
+    ok: True (may run), False (blocked) or WAITING (never confirmed here: wait for the first server answer).
+    follow: None, REFRESH or WAIT."""
     st = _state()
     if not url:
         first = st.setdefault("trial_start", time.time()); _write(st)
         left = TRIAL_DAYS - (time.time() - first) / 86400
         if left > 0:
-            return True, f"Trial mode: {left:.1f} days left", False
-        return False, "Trial expired. Please enter a licence key.", False
+            return True, f"Trial mode: {left:.1f} days left", None
+        return False, "Trial expired. Please enter a licence key.", None
     if not key:
-        return False, "Please enter your licence key.", False
+        return False, "Please enter your licence key.", None
     now = time.time() if now is None else now
     c = load_cache()
     if _usable(c, key, now, CACHE_HOURS * 3600):
-        return True, _valid_msg(c.get("expires")), True
+        return True, _valid_msg(c.get("expires")), REFRESH
     status, msg = server_check(key, url, sleep)
-    if status == OK: return True, msg, False
-    if status == REJECTED: return False, msg, False
+    if status == OK: return True, msg, None
+    if status == REJECTED: return False, msg, None
     return offline_verdict(key, now)
 
 
 def offline_verdict(key, now=None):
-    """Used when the server cannot be reached: (ok, message, False)."""
+    """The server cannot be reached right now.
+    - confirmed within GRACE_DAYS and expiry not passed: run (the 12 h recheck carries on).
+    - confirmed on this computer before (older, or expiry passed): run while retrying in the background;
+      only an actual answer from the server can block.
+    - never confirmed for this key on this computer: WAITING for the first answer."""
     now = time.time() if now is None else now
     c = load_cache()
     if _usable(c, key, now, GRACE_DAYS * 86400):
-        return True, _valid_msg(c.get("expires"), " (licence server unreachable, offline grace active)"), False
-    return False, UNREACHABLE_MSG, False
+        return True, _valid_msg(c.get("expires"), " (licence server unreachable, offline grace active)"), None
+    if c and c.get("key") == key:
+        return True, CHECKING_MSG, WAIT
+    return WAITING, CHECKING_MSG, WAIT
 
 
 def refresh(key, url, sleep=time.sleep):
-    """Background recheck. Returns (still_ok, message, rejected)."""
+    """Background recheck. Returns (ok, message, rejected, follow)."""
     if not url or not key:
-        ok, msg, _ = check_full(key, url, sleep=sleep); return ok, msg, False
+        ok, msg, _ = check_full(key, url, sleep=sleep); return ok, msg, False, None
     status, msg = server_check(key, url, sleep)
-    if status == OK: return True, msg, False
-    if status == REJECTED: return False, msg, True
-    ok, msg, _ = offline_verdict(key); return ok, msg, False
+    if status == OK: return True, msg, False, None
+    if status == REJECTED: return False, msg, True, None
+    ok, msg, follow = offline_verdict(key)
+    return ok, msg, False, follow
+
+
+def wait_for_server(key, url, cancelled=lambda: False, status=lambda msg: None, sleep=time.sleep, clock=time.monotonic):
+    """Keeps asking the server (60 s attempts, waits of 15, 30, 60 s, then every 2 minutes) until it answers.
+    Returns (True, msg) when valid, (False, msg) when rejected, or None when cancelled. Never gives up on its own.
+    After about HINT_AFTER seconds it calls status(HINT_MSG) once, as a gentle hint (not an error)."""
+    start, n, hinted = clock(), 0, False
+    while not cancelled():
+        st, msg = server_check(key, url, sleep, attempts=1)
+        if st == OK: return True, msg
+        if st == REJECTED: return False, msg
+        if not hinted and clock() - start >= HINT_AFTER:
+            hinted = True; status(HINT_MSG)
+        wait = WAIT_STEPS[n] if n < len(WAIT_STEPS) else WAIT_EVERY; n += 1
+        end = clock() + wait
+        while not cancelled() and clock() < end:
+            sleep(min(1, end - clock()))
+    return None
 
 
 def check(key, url):
