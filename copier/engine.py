@@ -1,5 +1,5 @@
 """Telegram listener: ties the parser, the ticket store and the MT5 executor together."""
-import asyncio, threading
+import asyncio, os, threading
 from . import config as C
 from .parser import parse, parse_command, parse_update, Signal, Command
 from .store import Store
@@ -10,10 +10,11 @@ def session_path():
     return C.path("telegram")
 
 
-# Only one TelegramClient may have the Telegram login (.session SQLite file) open at a time.
-# Every client in the app is created through session_client(), which holds this lock until it disconnects.
-SESSION_LOCK = threading.Lock()
-SESSION_WAIT = 20          # seconds to wait for another part of the app to release the login
+# Exactly ONE TelegramClient per process, living on ONE asyncio loop in ONE dedicated thread
+# (TelegramService). The setup wizard, the channel list and the copier all reuse it through
+# run_coroutine_threadsafe. The login is kept as a StringSession in memory and saved to
+# "telegram.string", so no SQLite file is held open at all (no more "database is locked").
+# An existing "telegram.session" (SQLite) login is migrated once, read from a copy, without re-login.
 LOCKED_RETRIES = (0.5, 1, 2, 3)
 
 LOCKED_MESSAGE = ("Your Telegram login file is busy (database is locked). Close any other SignalPilot window, "
@@ -28,12 +29,62 @@ def friendly_error(e):
     return LOCKED_MESSAGE if is_db_locked(e) else str(e)
 
 
+def string_path():
+    return C.path("telegram.string")
+
+
+def load_session_string():
+    """The saved login as a StringSession string. Migrates an old telegram.session file once."""
+    try:
+        with open(string_path(), encoding="utf-8") as f:
+            s = f.read().strip()
+        if s: return s
+    except OSError:
+        pass
+    s = migrate_sqlite_session(session_path() + ".session")
+    if s:
+        try: save_session_string(s)
+        except OSError: pass
+    return s
+
+
+def save_session_string(s):
+    if not s: return
+    tmp = string_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f: f.write(s)
+    os.replace(tmp, string_path())
+
+
+def migrate_sqlite_session(file):
+    """Reads dc + auth key out of a Telethon .session (SQLite) file, from a temporary copy so a lock
+    on the original cannot block us. Returns a StringSession string, or "" when there is no login."""
+    if not os.path.exists(file): return ""
+    import sqlite3, shutil, tempfile
+    d = tempfile.mkdtemp()
+    try:
+        cp = os.path.join(d, "s.session"); shutil.copyfile(file, cp)
+        con = sqlite3.connect(cp)
+        try: row = con.execute("select dc_id, server_address, port, auth_key from sessions").fetchone()
+        finally: con.close()
+    except Exception:
+        return ""
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    if not row or not row[3]: return ""
+    from telethon.sessions import StringSession
+    from telethon.crypto import AuthKey
+    ss = StringSession(); ss.set_dc(row[0], row[1], row[2]); ss.auth_key = AuthKey(data=row[3])
+    return ss.save()
+
+
 def make_client(cfg):
+    """Only ever called by TelegramService, once per process."""
     from telethon import TelegramClient
+    from telethon.sessions import StringSession
     api_id, api_hash = C.api_credentials(cfg)
     if not (api_id and api_hash):
         raise RuntimeError("Telegram app details are missing. Open Settings and run the setup again.")
-    return TelegramClient(session_path(), api_id, api_hash)
+    return TelegramClient(StringSession(load_session_string()), api_id, api_hash)
 
 
 async def _retry_locked(fn):
@@ -47,35 +98,62 @@ async def _retry_locked(fn):
             await asyncio.sleep(delay)
 
 
-class session_client:
-    """async with session_client(cfg) as client: the one shared login, always disconnected on exit."""
-    def __init__(self, cfg): self.cfg = cfg; self.client = None; self.held = False
+class TelegramService:
+    """Owns the single client and the single loop thread. Use service() to get it."""
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, name="telegram", daemon=True)
+        self.thread.start()
+        self.client = None; self.created = 0
 
-    async def __aenter__(self):
-        loop = asyncio.get_running_loop()
-        self.held = await loop.run_in_executor(None, lambda: SESSION_LOCK.acquire(timeout=SESSION_WAIT))
-        if not self.held:
-            raise RuntimeError("SignalPilot is still busy with Telegram (copier or channel list). Wait a few seconds and try again.")
-        try:
-            self.client = await _retry_locked(lambda: make_client(self.cfg))
-        except BaseException:
-            self.release(); raise
+    def submit(self, coro):
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def run(self, coro, timeout=None):
+        """Run a coroutine on the Telegram loop from any other thread and wait for the result."""
+        if threading.current_thread() is self.thread:
+            raise RuntimeError("TelegramService.run called from the Telegram thread")
+        return self.submit(coro).result(timeout)
+
+    async def get_client(self, cfg):
+        """The one client, created on first use and (re)connected if needed. Runs on the loop."""
+        if self.client is None:
+            self.client = make_client(cfg); self.created += 1
+        if not self.client.is_connected():
+            await self.client.connect()
         return self.client
 
-    async def __aexit__(self, *exc):
+    def save(self):
         try:
-            if self.client is not None: await self.client.disconnect()
+            if self.client is not None: save_session_string(self.client.session.save())
         except Exception:
             pass
-        finally:
-            try:
-                if self.client is not None and getattr(self.client, "session", None): self.client.session.close()
-            except Exception:
-                pass
-            self.release()
 
-    def release(self):
-        if self.held: self.held = False; SESSION_LOCK.release()
+    def shutdown(self):
+        if self.client is not None:
+            try: self.run(self.client.disconnect(), 10)
+            except Exception: pass
+            self.save()
+        self.loop.call_soon_threadsafe(self.loop.stop)
+
+
+_SERVICE = None
+_SERVICE_LOCK = threading.Lock()
+
+
+def service():
+    global _SERVICE
+    with _SERVICE_LOCK:
+        if _SERVICE is None: _SERVICE = TelegramService()
+        return _SERVICE
+
+
+def reset_service():
+    """Tests only."""
+    global _SERVICE
+    with _SERVICE_LOCK:
+        if _SERVICE is not None: _SERVICE.loop.call_soon_threadsafe(_SERVICE.loop.stop)
+        _SERVICE = None
 
 
 async def login(client, cfg, ask, phone=None):
@@ -83,23 +161,28 @@ async def login(client, cfg, ask, phone=None):
     await _retry_locked(lambda: client.start(phone=lambda: phone or cfg.get("telegram_phone") or ask("Your Telegram phone number, with country code (for example +27821234567):", False),
                        code_callback=lambda: ask("Telegram just sent you a login code inside the Telegram app.\nType it here:", False),
                        password=lambda: ask("Your Telegram account has a two step password.\nType it here:", True)))
+    service().save()
 
 
-async def login_and_list(cfg, ask, phone=None):
-    """Used by the setup wizard: logs in and returns (my_name, [(id, name), ...])."""
-    async with session_client(cfg) as client:
-        await login(client, cfg, ask, phone)
-        me = await client.get_me()
-        out = []
-        async for d in client.iter_dialogs():
-            if d.is_channel or d.is_group:
-                out.append((d.id, d.name))
-        name = " ".join(x for x in (getattr(me, "first_name", ""), getattr(me, "last_name", "")) if x)
-        return name, out
+async def _login_and_list(cfg, ask, phone=None):
+    client = await service().get_client(cfg)
+    await login(client, cfg, ask, phone)
+    me = await client.get_me()
+    out = []
+    async for d in client.iter_dialogs():
+        if d.is_channel or d.is_group:
+            out.append((d.id, d.name))
+    name = " ".join(x for x in (getattr(me, "first_name", ""), getattr(me, "last_name", "")) if x)
+    return name, out
 
 
-async def list_channels(cfg, ask):
-    return (await login_and_list(cfg, ask))[1]
+def login_and_list(cfg, ask, phone=None):
+    """Blocking (call from a worker thread). Logs in on the shared client and returns (my_name, [(id, name), ...])."""
+    return service().run(_login_and_list(cfg, ask, phone))
+
+
+def list_channels(cfg, ask):
+    return login_and_list(cfg, ask)[1]
 
 
 class Engine:
@@ -110,11 +193,13 @@ class Engine:
 
     # -- lifecycle --
     def start(self):
+        self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
 
     def stop(self):
-        if self.loop and self.client:
-            asyncio.run_coroutine_threadsafe(self.client.disconnect(), self.loop)
+        """Stops copying. The shared Telegram client stays connected so the next Start or channel list just works."""
+        ev = getattr(self, "stop_event", None)
+        if ev: ev.set()
 
     def reload_settings(self, cfg):
         """Apply new trade settings straight away (no restart). Channel list changes need a restart."""
@@ -128,9 +213,8 @@ class Engine:
         return self.thread is not None and self.thread.is_alive()
 
     def _run(self):
-        self.loop = asyncio.new_event_loop(); asyncio.set_event_loop(self.loop)
         try:
-            self.loop.run_until_complete(self._main())
+            self._main()
         except Exception as e:
             self.log(f"Problem: {friendly_error(e)}")
         finally:
@@ -139,7 +223,7 @@ class Engine:
             self.status("telegram", None, "Not connected"); self.status("mt5", None, "Not connected")
             self.log("Copying stopped.")
 
-    async def _main(self):
+    def _main(self):
         self.cfg = C.load()
         chans = {k: v for k, v in self.cfg.get("channels", {}).items() if v.get("enabled", True)}
         if not chans:
@@ -151,19 +235,32 @@ class Engine:
         except Exception as e:
             self.status("mt5", False, "Not connected"); raise RuntimeError(f"Could not connect to MetaTrader 5. Make sure it is open and logged in. ({e})")
         self.status("mt5", True, "Connected")
+        if self.stop_event.is_set(): return
         from telethon import events
-        async with session_client(self.cfg) as client:
-            self.client = client
-            try:
-                await login(client, self.cfg, self.ask)
-                self.status("telegram", True, "Connected")
-                ids = [int(k) for k in chans]
-                self.log("Copying is ON. Watching: " + ", ".join(v.get("name", k) for k, v in chans.items()))
-                client.add_event_handler(self._on_new, events.NewMessage(chats=ids))
-                client.add_event_handler(self._on_edit, events.MessageEdited(chats=ids))
-                await client.run_until_disconnected()
-            finally:
-                self.client = None
+        svc = service(); ids = [int(k) for k in chans]
+        handlers = ((self._on_new, events.NewMessage(chats=ids)), (self._on_edit, events.MessageEdited(chats=ids)))
+
+        async def attach():
+            client = await svc.get_client(self.cfg)
+            await login(client, self.cfg, self.ask)
+            for h, e in handlers: client.add_event_handler(h, e)
+            return client
+
+        async def detach(client):
+            for h, e in handlers: client.remove_event_handler(h, e)
+
+        self.client = svc.run(attach()); self.loop = svc.loop
+        try:
+            self.status("telegram", True, "Connected")
+            self.log("Copying is ON. Watching: " + ", ".join(v.get("name", k) for k, v in chans.items()))
+            while not self.stop_event.wait(5):
+                if not self.client.is_connected():      # network dropped: reconnect the same client
+                    try: svc.run(svc.get_client(self.cfg), 60)
+                    except Exception as e: self.log(f"Telegram reconnect failed, retrying: {friendly_error(e)}")
+        finally:
+            try: svc.run(detach(self.client), 10)
+            except Exception: pass
+            svc.save(); self.client = None
 
     # -- handlers --
     def _st(self, chat_id):

@@ -240,7 +240,7 @@ class Wizard(tk.Toplevel):
                 return self.say(f"Telegram login did not work: {friendly_error(e)}")
             name, self.chans = r; self.app.set_status("telegram", True, f"Logged in as {name}")
             self.app.log(f"Logged in to Telegram as {name}."); self.go()
-        self.worker(lambda: asyncio.run(login_and_list(cfg, lambda p, s: self.app.ask(p, s, parent=self), phone)), done)
+        self.worker(lambda: login_and_list(cfg, lambda p, s: self.app.ask(p, s, parent=self), phone), done)
 
     def page_channels(self):
         if not self.chans:
@@ -444,6 +444,7 @@ class App:
         self.log("Installing the update. SignalPilot will reopen by itself in a moment.")
         if self.engine and self.engine.running(): self.engine.stop()
         if self.tray: self.tray.stop()
+        self._telegram_shutdown()
         global _instance_handle
         if sys.platform == "win32" and _instance_handle:
             try: import ctypes; ctypes.windll.kernel32.CloseHandle(_instance_handle); _instance_handle = None
@@ -626,7 +627,7 @@ class App:
                 while self.engine.running(): threading.Event().wait(0.2)
             from copier.engine import login_and_list
             try:
-                _, chans = asyncio.run(login_and_list(cfg, self.ask))
+                _, chans = login_and_list(cfg, self.ask)
                 self.q.put(("call", lambda: self.channel_window(chans, was_running)))
             except Exception as e:
                 from copier.engine import friendly_error
@@ -674,7 +675,14 @@ class App:
             if not messagebox.askyesno("Quit", "Copying is running. Stop copying and close?"): return
             self.engine.stop()
         if self.tray: self.tray.stop()
+        self._telegram_shutdown()
         self.root.destroy()
+
+    def _telegram_shutdown(self):
+        from copier import engine as E
+        if E._SERVICE is not None:
+            try: E._SERVICE.shutdown()
+            except Exception: pass
 
 
 _instance_handle = None
