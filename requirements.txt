@@ -1,0 +1,4 @@
+telethon>=1.36
+MetaTrader5>=5.0.45
+pystray>=0.19
+Pillow>=10

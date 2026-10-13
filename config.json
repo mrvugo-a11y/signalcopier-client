@@ -1,0 +1,46 @@
+{
+  "licence_key": "",
+  "licence_url": "",
+  "telegram_api_id": 0,
+  "telegram_api_hash": "",
+  "telegram_phone": "",
+  "mt5_path": "",
+  "mt5_login": 0,
+  "mt5_password": "",
+  "mt5_server": "",
+  "channels": {},
+  "default_settings": {
+    "enabled": true,
+    "lot_mode": "fixed",
+    "fixed_lot": 0.01,
+    "risk_percent": 1.0,
+    "default_sl_points": 0,
+    "split_tps": true,
+    "use_tps": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "max_spread_points": 50,
+    "magic_number": 777001,
+    "symbol_suffix": "",
+    "symbol_map": {
+      "GOLD": "XAUUSD"
+    },
+    "pending_orders": true,
+    "range_entry": "market",
+    "max_entry_distance_points": 0,
+    "reverse_signals": false,
+    "tp_hit_action": "move_sl_be",
+    "commands_without_reply_apply_to_last": true,
+    "follow_edits": true,
+    "max_open_trades": 20,
+    "slippage_points": 20,
+    "comment": "TGCopier"
+  },
+  "setup_done": false,
+  "minimise_to_tray": true,
+  "start_copying_on_launch": false
+}
