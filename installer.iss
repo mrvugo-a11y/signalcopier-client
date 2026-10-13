@@ -2,7 +2,7 @@
 ; Build: iscc installer.iss   (after PyInstaller has produced dist\SignalPilot)
 #define AppName "SignalPilot"
 #ifndef AppVersion
-  #define AppVersion "1.2.8"
+  #define AppVersion "1.2.9"
 #endif
 
 [Setup]
@@ -17,7 +17,11 @@ OutputBaseFilename={#AppName} Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequiredOverridesAllowed=dialog
+; Per-user install by default ({autopf} = %LOCALAPPDATA%\Programs), so no UAC is needed.
+; /ALLUSERS on the command line (used by the updater when the old copy is in Program Files) upgrades that install in place.
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog commandline
+SetupLogging=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 AppMutex=Local\SignalPilot-SingleInstance
 CloseApplications=yes
@@ -36,7 +40,6 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppName}.exe"; Tasks: deskt
 
 [Run]
 Filename: "{app}\{#AppName}.exe"; Description: "Open {#AppName} now"; Flags: nowait postinstall skipifsilent
-; After an automatic (silent) update, reopen the app.
-Filename: "{app}\{#AppName}.exe"; Flags: nowait; Check: WizardSilent
+; After an automatic (silent) update the updater helper reopens the app once it has checked the exit code.
 
 ; Customer data (login, settings, trades) lives in %APPDATA%\SignalPilot and is kept on uninstall and upgrade.

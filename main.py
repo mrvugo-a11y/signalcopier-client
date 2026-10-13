@@ -465,6 +465,7 @@ class App:
         else:
             self.check_licence_async()
             if cfg.get("start_copying_on_launch"): root.after(800, self.start)
+        root.after(1500, self.report_update_result)
         root.after(5000, self.check_updates)
 
     # -- automatic updates
@@ -473,7 +474,7 @@ class App:
         def run():
             try: r = updater.newer_available(C.load())
             except Exception: r = None
-            if r: self.q.put(("call", lambda: self.offer_update(*r)))
+            if r and updater.should_offer(r[0]): self.q.put(("call", lambda: self.offer_update(*r)))
         if not getattr(self, "_update_offered", False):
             threading.Thread(target=run, daemon=True).start()
         self.root.after(updater.CHECK_EVERY_MS, self.check_updates)
@@ -489,18 +490,34 @@ class App:
         def run():
             try:
                 path = updater.download(url)
-                self.q.put(("call", lambda: self._install_update(path)))
+                self.q.put(("call", lambda: self._install_update(path, version)))
             except Exception as e:
                 self._update_offered = False
                 self.log(f"Update download failed: {e}")
         threading.Thread(target=run, daemon=True).start()
 
-    def _install_update(self, path):
+    def report_update_result(self):
+        from copier import updater
+        try: r = updater.pending_result()
+        except Exception: r = None
+        if not r: return
+        _, ver, log_path = r
+        self.log(f"The automatic update to {ver} did not install. Details: {log_path}")
+        if messagebox.askyesno("Update", f"The automatic update to version {ver} could not be installed.\n\n"
+                               "Please download the installer and run it once. Your settings, licence and Telegram "
+                               "login are kept.\n\nOpen the download page now?\n" + updater.DOWNLOAD_PAGE, parent=self.root):
+            import webbrowser; webbrowser.open(updater.DOWNLOAD_PAGE)
+
+    def _install_update(self, path, version=""):
         from copier import updater
         try:
-            updater.launch_installer(path)
+            updater.launch_installer(path, version)
         except Exception as e:
-            self._update_offered = False; self.log(f"Could not start the update: {e}"); return
+            self._update_offered = False; self.log(f"Could not start the update: {e}")
+            if messagebox.askyesno("Update", f"The update could not be started ({e}).\n\nOpen the download page?\n"
+                                   + updater.DOWNLOAD_PAGE, parent=self.root):
+                import webbrowser; webbrowser.open(updater.DOWNLOAD_PAGE)
+            return
         self.log("Installing the update. SignalPilot will reopen by itself in a moment.")
         if self.engine and self.engine.running(): self.engine.stop()
         if self.tray: self.tray.stop()
