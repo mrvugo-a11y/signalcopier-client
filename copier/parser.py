@@ -29,6 +29,7 @@ class Signal:
     entry_high: Optional[float] = None   # set when an entry range is given
     sl: Optional[float] = None
     tps: List[Optional[float]] = field(default_factory=list)  # None = open TP
+    trade_id: Optional[str] = None       # channel's own trade number (e.g. "Номер сделки"), for dedupe
 
 
 @dataclass
@@ -43,8 +44,42 @@ def _f(s: str) -> float:
     return float(s.replace(",", "."))
 
 
+# Russian terms -> English, applied (on upper-cased text) BEFORE the non-ASCII strip.
+_C = "А-ЯЁ"
+RU_MAP = [
+    (r"НОМЕР\s+СДЕЛКИ\s*:?\s*\d+", " "),                  # Signum trade number is not a price
+    (r"СДЕЛКА\s+НА\s+\d+(?:[.,]\d+)?\s*%\s*РИСКА\.?", " "),  # info only; user's risk settings apply
+    (r"СТОП\s*/\s*ОТМЕНА", " "),                              # analysis-post label, never a cancel
+    (r"ТОЧКА\s+ВХОДА", " ENTRY "),
+    (rf"ПЕРЕНЕСТИ\s+СТОП\s+В\s+БЕЗУБЫТОК|(?<![{_C}])(?:В\s+)?БЕЗУБЫТОК(?![{_C}])", " BREAKEVEN "),
+    (r"СТОП[\s-]*ЛОСС", " SL "),
+    (r"ТЕЙК[\s-]*ПРОФИТ", " TP "),
+    (rf"(?<![{_C}])(?:ОТМЕНИТЬ\s+ОРДЕР|ОТМЕНИТЬ|ОТМЕНА)(?![{_C}])", " CANCEL "),
+    (rf"(?<![{_C}])(?:ПОКУПКА|КУПИТЬ)(?![{_C}])", " BUY "),
+    (rf"(?<![{_C}])(?:ПРОДАЖА|ПРОДАТЬ)(?![{_C}])", " SELL "),
+]
+RU_TRADE_ID_RE = re.compile(r"НОМЕР\s+СДЕЛКИ\s*:?\s*(\d+)", re.I)
+# Repost safety rule: analysis posts (marked 'Стоп / отмена') and results reports are
+# informational; a reply/repost of one must never open, modify or command a trade.
+RU_ANALYSIS_RE = re.compile(r"СТОП\s*/\s*ОТМЕНА", re.I)
+RU_RESULT_RE = re.compile(r"ЗАКРЫЛ(?:СЯ|АСЬ|ИСЬ)?\s+(?:В\s+)?(?:ПЛЮС|МИНУС|ПРОФИТ|С\s+ПРОФИТОМ)|РЕЗУЛЬТАТ\s*:"
+                          r"|ЗАБРАЛИ|ОТРАБОТКА\s+АНАЛИТИКИ", re.I)
+
+
+def trade_id(text: str) -> Optional[str]:
+    m = RU_TRADE_ID_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def is_ru_info(text: str) -> bool:
+    """Russian analysis post or results report: never a trade instruction."""
+    return bool(RU_ANALYSIS_RE.search(text or "") or RU_RESULT_RE.search(text or ""))
+
+
 def normalise(text: str) -> str:
     t = text.upper()
+    for pat, rep in RU_MAP:
+        t = re.sub(pat, rep, t)
     t = t.replace("\u2013", "-").replace("\u2014", "-").replace("：", ":")
     t = re.sub(r"[^\x00-\x7F]+", " ", t)          # strip emojis
     t = t.replace("TAKE PROFIT", "TP").replace("TAKEPROFIT", "TP").replace("T/P", "TP")
@@ -152,12 +187,14 @@ def parse_signal(text: str) -> Optional[Signal]:
     if entry is not None and otype == "MARKET" and re.search(r"\b(NOW|MARKET|CMP|CURRENT)\b", head) and entry_high is None:
         pass  # market with reference price
     return Signal(side=side, symbol=symbol, order_type=otype, entry=entry,
-                  entry_high=entry_high, sl=sl, tps=tps)
+                  entry_high=entry_high, sl=sl, tps=tps, trade_id=trade_id(text))
 
 
 def parse(text: str) -> Optional[Union[Signal, Command]]:
     if not text or not text.strip():
         return None
+    if is_ru_info(text):
+        return None   # analysis post / results report (repost safety rule)
     s = parse_signal(text)
     if s:
         return s
@@ -166,6 +203,8 @@ def parse(text: str) -> Optional[Union[Signal, Command]]:
 
 def parse_update(text: str) -> Optional[Command]:
     """For edits/replies that contain new SL/TP values without being a full signal."""
+    if is_ru_info(text):
+        return None   # reposted analysis / results report replying to a post is not a modification
     t = normalise(text)
     sl, tps = _sl_tps(t)
     if sl is not None or tps:

@@ -30,6 +30,17 @@ class Store:
                     del self.data["signals"][k]
             self._save()
 
+    def has_trade(self, chat_id, trade_id):
+        """True if this channel's trade number was already copied (channels may repost it)."""
+        return bool(trade_id) and f"{chat_id}:{trade_id}" in self.data.get("trade_ids", {})
+
+    def mark_trade(self, chat_id, trade_id, msg_id):
+        if not trade_id:
+            return
+        with self.lock:
+            self.data.setdefault("trade_ids", {})[f"{chat_id}:{trade_id}"] = msg_id
+            self._save()
+
     def get(self, chat_id, msg_id):
         return self.data["signals"].get(f"{chat_id}:{msg_id}")
 

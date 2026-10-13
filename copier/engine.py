@@ -280,11 +280,15 @@ class Engine:
         return self.cfg["channels"].get(str(chat_id), {}).get("name", str(chat_id))
 
     def _open(self, chat_id, msg_id, sig, st):
+        tid = getattr(sig, "trade_id", None)
+        if tid and self.store.has_trade(chat_id, tid):
+            self.log(f"[{self._name(chat_id)}] trade #{tid} was already copied, ignoring repost"); return
         with self.mt5_lock:
             tickets = self.ex.open_signal(sig, st)
         if tickets:
             self.store.put(chat_id, msg_id, {"symbol": sig.symbol, "side": sig.side, "sl": sig.sl,
                                              "tps": sig.tps, "tickets": tickets})
+            self.store.mark_trade(chat_id, tid, msg_id)
 
     def _apply(self, chat_id, msg_id, cmd, st):
         rec = self.store.get(chat_id, msg_id) if msg_id else None
