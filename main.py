@@ -235,7 +235,9 @@ class Wizard(tk.Toplevel):
         def done(r, e):
             self.set_busy(False)
             if isinstance(e, Cancelled): return self.say("Login cancelled. Click Next to try again.")
-            if e: return self.say(f"Telegram login did not work: {e}")
+            if e:
+                from copier.engine import friendly_error
+                return self.say(f"Telegram login did not work: {friendly_error(e)}")
             name, self.chans = r; self.app.set_status("telegram", True, f"Logged in as {name}")
             self.app.log(f"Logged in to Telegram as {name}."); self.go()
         self.worker(lambda: asyncio.run(login_and_list(cfg, lambda p, s: self.app.ask(p, s, parent=self), phone)), done)
@@ -518,7 +520,8 @@ class App:
                 _, chans = asyncio.run(login_and_list(cfg, self.ask))
                 self.q.put(("call", lambda: self.channel_window(chans, was_running)))
             except Exception as e:
-                self.log(f"Could not load channels: {e}")
+                from copier.engine import friendly_error
+                self.log(f"Could not load channels: {friendly_error(e)}")
                 if was_running: self.q.put(("call", self.start))
         threading.Thread(target=work, daemon=True).start()
 
@@ -565,7 +568,49 @@ class App:
         self.root.destroy()
 
 
+_instance_handle = None
+
+
+def acquire_single_instance():
+    """True if this is the only running SignalPilot. Windows: named mutex; elsewhere: a locked file."""
+    global _instance_handle
+    if sys.platform == "win32":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        _instance_handle = k32.CreateMutexW(None, False, "Local\\SignalPilot-SingleInstance")
+        return not (_instance_handle and k32.GetLastError() == 183)   # ERROR_ALREADY_EXISTS
+    try:
+        import fcntl
+    except ImportError:
+        return True
+    try:
+        os.makedirs(C.data_dir(), exist_ok=True)
+        _instance_handle = open(C.path("signalpilot.lock"), "w")
+        fcntl.flock(_instance_handle, fcntl.LOCK_EX | fcntl.LOCK_NB); return True
+    except OSError:
+        return False
+
+
+def focus_existing_window():
+    """Brings the already running window to the front. Returns True when it was found."""
+    if sys.platform != "win32": return False
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        hwnd = u32.FindWindowW(None, f"{BRAND_NAME}  v{__version__}")
+        if not hwnd: return False
+        u32.ShowWindow(hwnd, 9); u32.SetForegroundWindow(hwnd); return True   # SW_RESTORE
+    except Exception:
+        return False
+
+
 def main():
+    if not acquire_single_instance():
+        if not focus_existing_window():
+            r = tk.Tk(); r.withdraw()
+            messagebox.showinfo(BRAND_NAME, f"{BRAND_NAME} is already open. Look for it on the taskbar or in the system tray.")
+            r.destroy()
+        return
     root = tk.Tk(); App(root); root.mainloop()
 
 
