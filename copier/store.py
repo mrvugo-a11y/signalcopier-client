@@ -22,6 +22,8 @@ class Store:
         """record = {symbol, side, entry, sl, tickets:[...]}"""
         with self.lock:
             self.data["signals"][f"{chat_id}:{msg_id}"] = record
+            tm = self.data.setdefault("tickets", {})     # permanent ticket to channel map, for Channel results
+            for t in record.get("tickets") or []: tm[str(t)] = str(chat_id)
             self.data["last"][str(chat_id)] = msg_id
             if len(self.data["signals"]) > 2000:
                 for k in list(self.data["signals"])[:500]:

@@ -1,5 +1,5 @@
 =====================================================================
-  SIGNALPILOT   v1.2.7   Telegram signals into MetaTrader 5 (Windows)
+  SIGNALPILOT   v1.2.8   Telegram signals into MetaTrader 5 (Windows)
 =====================================================================
 
 WHAT IT DOES

@@ -79,6 +79,65 @@ def field_grid(parent, fields, values, overrides=None):
     return rows
 
 
+# ------------------------------------------------------------------ channel results
+class ResultsWindow(tk.Toplevel):
+    """Profit and loss of closed trades per signal channel, read from MetaTrader 5 history."""
+    def __init__(self, app):
+        super().__init__(app.root); self.app = app
+        self.title("Channel results"); self.geometry("720x420"); self.transient(app.root)
+        from copier import results as R
+        self.R = R
+        top = ttk.Frame(self, padding=(12, 10, 12, 4)); top.pack(fill="x")
+        ttk.Label(top, text="Period").pack(side="left")
+        self.period = tk.StringVar(value="7 days")
+        cb = ttk.Combobox(top, textvariable=self.period, values=[p for p, _ in R.PERIODS], state="readonly", width=10)
+        cb.pack(side="left", padx=6); cb.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        ttk.Button(top, text="Refresh", command=self.refresh).pack(side="left")
+        self.info = ttk.Label(top, text="", foreground=GREY); self.info.pack(side="right")
+        cols = (("name", "Channel", 200), ("profit", "Profit", 90), ("loss", "Loss", 90), ("net", "Net", 90),
+                ("trades", "Trades", 60), ("win", "Win rate", 70))
+        self.tree = ttk.Treeview(self, columns=[c for c, _, _ in cols], show="headings")
+        for c, t, w in cols:
+            self.tree.heading(c, text=t); self.tree.column(c, width=w, anchor="w" if c == "name" else "e")
+        self.tree.tag_configure("pos", foreground=GREEN); self.tree.tag_configure("neg", foreground=RED)
+        self.tree.pack(fill="both", expand=True, padx=12, pady=4)
+        ttk.Label(self, text="Closed trades only, including swap and commission. Trades copied before version 1.2.8 "
+                  "are matched while their signal is still remembered; older ones show as Not tagged.",
+                  foreground=GREY, wraplength=690, padding=(12, 0, 12, 8)).pack(anchor="w")
+        self.refresh()
+
+    def refresh(self):
+        self.info.configure(text="Loading...")
+        period = dict(self.R.PERIODS)[self.period.get()]
+        def run():
+            from copier.executor import Executor
+            cfg = C.load(); own = None
+            try:
+                eng = self.app.engine
+                lock = eng.mt5_lock if eng and eng.running() else None
+                if lock is None:
+                    own = Executor(cfg, lambda m: None); own.connect()
+                    rows, cur = self.R.fetch(cfg, period)
+                else:
+                    with lock: rows, cur = self.R.fetch(cfg, period)
+                self.app.q.put(("call", lambda: self.show(rows, cur)))
+            except Exception as e:
+                msg = f"Could not read results: {e}"
+                self.app.q.put(("call", lambda: self.info.winfo_exists() and self.info.configure(text=msg)))
+            finally:
+                if own: own.shutdown()
+        threading.Thread(target=run, daemon=True).start()
+
+    def show(self, rows, cur):
+        if not self.winfo_exists(): return
+        self.tree.delete(*self.tree.get_children())
+        f = lambda v: f"{v:,.2f}"
+        for r in rows:
+            self.tree.insert("", "end", values=(r["name"], f(r["profit"]), f(r["loss"]), f(r["net"]), r["trades"], f"{r['win_rate']:.0f}%"),
+                             tags=("pos",) if r["net"] > 0 else ("neg",) if r["net"] < 0 else ())
+        self.info.configure(text=f"Amounts in {cur or 'account currency'}" if rows else "No closed trades in this period.")
+
+
 # ------------------------------------------------------------------ channel picker
 class ChannelPicker(ttk.Frame):
     def __init__(self, parent, chans, current):
@@ -387,6 +446,7 @@ class App:
         self.btn_start = ttk.Button(bar, text="▶  Start copying", command=self.start); self.btn_start.pack(side="left")
         self.btn_stop = ttk.Button(bar, text="■  Stop", command=self.stop, state="disabled"); self.btn_stop.pack(side="left", padx=6)
         ttk.Button(bar, text="Channels", command=self.select_channels).pack(side="left", padx=(18, 0))
+        ttk.Button(bar, text="Channel results", command=lambda: ResultsWindow(self)).pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="Settings", command=lambda: SettingsWindow(self)).pack(side="left", padx=6)
         ttk.Button(bar, text="Setup", command=lambda: Wizard(self)).pack(side="left")
         ttk.Button(bar, text="Open data folder", command=self.open_data).pack(side="right")
