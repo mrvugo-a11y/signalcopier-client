@@ -1,7 +1,7 @@
-# PyInstaller spec: builds dist\SignalCopier\SignalCopier.exe (one folder, windowed, no console).
-# Build:  py -3.12 -m PyInstaller --noconfirm SignalCopier.spec
+# PyInstaller spec: builds dist\SignalPilot\SignalPilot.exe (one folder, windowed, no console).
+# Build:  py -3.12 -m PyInstaller --noconfirm SignalPilot.spec
 block_cipher = None
-APP = "SignalCopier"   # keep in sync with copier/branding.py BRAND_NAME and installer.iss
+APP = "SignalPilot"   # keep in sync with copier/branding.py BRAND_NAME and installer.iss
 
 a = Analysis(
     ["main.py"], pathex=["."], binaries=[],

@@ -11,7 +11,7 @@ except Exception:
 @unittest.skipUnless(HAVE_TK, "needs Tk and a display")
 class TestGui(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(); self.env = mock.patch.dict(os.environ, {"SIGNALCOPIER_HOME": self.tmp.name}); self.env.start()
+        self.tmp = tempfile.TemporaryDirectory(); self.env = mock.patch.dict(os.environ, {"SIGNALPILOT_HOME": self.tmp.name}); self.env.start()
     def tearDown(self):
         self.env.stop(); self.tmp.cleanup()
 

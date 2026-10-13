@@ -1,5 +1,5 @@
 """Config file handling. User data lives in %APPDATA%\\<BRAND_NAME> (Windows) or ~/.<BRAND_NAME> elsewhere.
-Set the env var SIGNALCOPIER_HOME to use another folder (used by the tests)."""
+Set the env var SIGNALPILOT_HOME to use another folder (used by the tests)."""
 import copy, json, os, sys
 from .branding import BRAND_NAME
 from . import app_credentials as AC
@@ -31,7 +31,7 @@ def app_dir():
 
 def data_dir():
     """Folder for the customer's own files (config, Telegram login, trades, log)."""
-    d = os.environ.get("SIGNALCOPIER_HOME")
+    d = os.environ.get("SIGNALPILOT_HOME")
     if not d:
         if sys.platform == "win32":
             d = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), BRAND_NAME)

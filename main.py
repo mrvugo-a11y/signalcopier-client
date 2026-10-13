@@ -1,4 +1,4 @@
-"""Telegram to MT5 Signal Copier: the customer facing window (setup wizard, settings, status and log)."""
+"""Telegram to MT5 SignalPilot: the customer facing window (setup wizard, settings, status and log)."""
 import asyncio, os, queue, sys, threading, tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, scrolledtext, filedialog
 from datetime import datetime

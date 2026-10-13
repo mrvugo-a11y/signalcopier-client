@@ -7,7 +7,7 @@ from copier import config as C, setup_logic as W, settings_schema as S, app_cred
 
 class Home(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(); self.env = mock.patch.dict(os.environ, {"SIGNALCOPIER_HOME": self.tmp.name})
+        self.tmp = tempfile.TemporaryDirectory(); self.env = mock.patch.dict(os.environ, {"SIGNALPILOT_HOME": self.tmp.name})
         self.env.start()
     def tearDown(self):
         self.env.stop(); self.tmp.cleanup()

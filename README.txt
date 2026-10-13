@@ -1,5 +1,5 @@
 =====================================================================
-  SIGNALCOPIER   v1.1   Telegram signals into MetaTrader 5 (Windows)
+  SIGNALPILOT   v1.2   Telegram signals into MetaTrader 5 (Windows)
 =====================================================================
 
 WHAT IT DOES
@@ -11,9 +11,9 @@ WHAT IT DOES
 INSTALL (customers)
   1. Install MetaTrader 5 from your broker and log in to your account.
      Click the "Algo Trading" button on the toolbar so it is GREEN.
-  2. Run "SignalCopier Setup.exe" (from your account page) and click Next
+  2. Run "SignalPilot Setup.exe" (from your account page) and click Next
      until it finishes. A desktop shortcut is created.
-  3. SignalCopier opens a short setup:
+  3. SignalPilot opens a short setup:
        licence key  >  Telegram phone number  >  login code from Telegram
        (and your two step password if you have one)  >  tick your channels
        >  MetaTrader 5 is found automatically  >  Finish.
@@ -22,7 +22,7 @@ INSTALL (customers)
 
   TIP: test on a DEMO account first.
 
-YOUR FILES  (kept in %APPDATA%\SignalCopier, open with "Open data folder")
+YOUR FILES  (kept in %APPDATA%\SignalPilot, open with "Open data folder")
   config.json        your settings (the Settings window edits it for you)
   telegram.session   your Telegram login. Delete it to log out.
   trades.json        links each signal message to its MT5 tickets

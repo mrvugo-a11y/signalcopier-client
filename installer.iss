@@ -1,12 +1,12 @@
-; Inno Setup script: builds "Output\SignalCopier Setup.exe"
-; Build: iscc installer.iss   (after PyInstaller has produced dist\SignalCopier)
-#define AppName "SignalCopier"
+; Inno Setup script: builds "Output\SignalPilot Setup.exe"
+; Build: iscc installer.iss   (after PyInstaller has produced dist\SignalPilot)
+#define AppName "SignalPilot"
 #ifndef AppVersion
   #define AppVersion "1.1.0"
 #endif
 
 [Setup]
-AppId={{6A3C1E52-7B9D-4C1F-9E3A-51C0F0B7D2A1}
+AppId={{D72C9711-B6E2-4A42-8CF1-9737549A12EC}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppName}
@@ -35,4 +35,4 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppName}.exe"; Tasks: deskt
 [Run]
 Filename: "{app}\{#AppName}.exe"; Description: "Open {#AppName} now"; Flags: nowait postinstall skipifsilent
 
-; Customer data (login, settings, trades) lives in %APPDATA%\SignalCopier and is kept on uninstall and upgrade.
+; Customer data (login, settings, trades) lives in %APPDATA%\SignalPilot and is kept on uninstall and upgrade.
