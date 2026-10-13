@@ -16,8 +16,9 @@ class TestUpdater(unittest.TestCase):
         def fake(url):
             if "latest-version" in url: raise OSError("down")
             return {"tag_name": "v1.3.0"}
-        with mock.patch.object(U, "_get_json", side_effect=fake):
-            v, url = U.newer_available({"licence_url": "https://site.example/api/licence"}, "1.2.1")
+        with mock.patch.object(U, "_get_json", side_effect=fake), \
+             mock.patch.object(U.C, "licence_url", return_value="https://site.example/api/licence"):
+            v, url = U.newer_available({}, "1.2.1")
             self.assertEqual(v, "1.3.0"); self.assertEqual(url, "https://site.example/download/SignalPilot-Setup.exe")
         with mock.patch.object(U, "_get_json", side_effect=OSError):
             self.assertIsNone(U.newer_available({}, "1.2.1"))
