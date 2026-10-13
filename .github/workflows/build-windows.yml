@@ -43,7 +43,7 @@ jobs:
         run: python -m pytest -q tests
 
       - name: Build exe with PyInstaller
-        run: python -m PyInstaller --noconfirm SignalCopier.spec
+        run: python -m PyInstaller --noconfirm SignalPilot.spec
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
@@ -55,17 +55,17 @@ jobs:
           $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" | Select-Object -First 1
           & $iscc.FullName "/DAppVersion=$ver" installer.iss
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          Copy-Item "Output\SignalCopier Setup.exe" "Output\SignalCopier-Setup.exe"
+          Copy-Item "Output\SignalPilot Setup.exe" "Output\SignalPilot-Setup.exe"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SignalCopier-Setup
-          path: Output/SignalCopier Setup.exe
+          name: SignalPilot-Setup
+          path: Output/SignalPilot Setup.exe
 
       - name: Publish release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            Output/SignalCopier Setup.exe
-            Output/SignalCopier-Setup.exe
+            Output/SignalPilot Setup.exe
+            Output/SignalPilot-Setup.exe
