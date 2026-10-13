@@ -5,8 +5,8 @@ from copier.store import Store
 
 BUY = ("⚡️ #GBPUSD\n\nНомер сделки: 47941683\n\nСделка на 0,5% риска.\n\nТип ордера: ПОКУПКА\n"
        "Точка входа: 1.32262\nСтоп лосс: 1.31962\nТейк профит: 1.32562\n\n#Бесплатный_сигнал")
-SELL = ("⚡️ #EURUSD\n\nНомер сделки: 47941690\n\nСделка на 0,5% риска.\n\nТип ордера: ПРОДАЖА\n"
-        "Точка входа: 1.16500\nСтоп-лосс: 1.16800\nТейк-профит: 1.16200\n\n#Бесплатный_сигнал")
+SELL = ("⚡️ #GBPUSD\n\nНомер сделки: 47941690\n\nСделка на 0,5% риска.\n\nТип ордера: ПРОДАЖА\n"
+        "Точка входа: 1.32262\nСтоп-лосс: 1.31962\nТейк-профит: 1.32562\n\n#Бесплатный_сигнал")
 
 
 class RussianSignalTests(unittest.TestCase):
@@ -18,23 +18,32 @@ class RussianSignalTests(unittest.TestCase):
 
     def test_sell(self):
         s = parse(SELL)
-        self.assertEqual((s.side, s.symbol, s.entry, s.sl, s.tps), ("SELL", "EURUSD", 1.165, 1.168, [1.162]))
+        self.assertEqual((s.side, s.symbol, s.entry, s.sl, s.tps), ("SELL", "GBPUSD", 1.32262, 1.31962, [1.32562]))
 
     def test_case_insensitive_and_synonyms(self):
-        s = parse("#GBPUSD\nТип ордера: купить\nвход: 1.30\nстоп лосс: 1.29\nтейк профит: 1.32")
+        s = parse("#GBPUSD\nТип ордера: купить\nточка входа: 1.30\nстоп лосс: 1.29\nтейк профит: 1.32")
         self.assertEqual((s.side, s.entry, s.sl, s.tps), ("BUY", 1.30, 1.29, [1.32]))
-        s = parse("#GBPUSD\nПродавать\nВход: 1.30\nСтоп-Лосс: 1.31\nТейк-Профит: 1.28")
+        s = parse("#GBPUSD\nПродать\nТочка входа: 1.30\nСтоп-Лосс: 1.31\nТейк-Профит: 1.28")
         self.assertEqual((s.side, s.entry, s.sl, s.tps), ("SELL", 1.30, 1.31, [1.28]))
 
-    def test_trade_number_not_price(self):
-        s = parse("#GBPUSD\nНомер сделки: 12345\nПОКУПКА\nСтоп лосс: 1.31962\nТейк профит: 1.32562")
+    def test_trade_number_and_risk_not_price(self):
+        s = parse("#GBPUSD\nНомер сделки: 12345\nСделка на 0,5% риска.\nПОКУПКА\nСтоп лосс: 1.31962\nТейк профит: 1.32562")
         self.assertIsNone(s.entry)
+        self.assertEqual(s.trade_id, "12345")
 
-    def test_analysis_ignored(self):
-        for t in ["#EURUSD\nПОКУПКА 1.1150–1.1180\nСтоп лосс: 1.1100\nТейк профит: 1.1250",
-                  "#EURUSD покупать в зоне 1.1150\nСтоп лосс: 1.1100\nТейк профит: 1.1250",
+    def test_analysis_yields_nothing(self):
+        for t in ["#EURUSD ПРОДАВАТЬ\nТочка входа: 1.1180\nСтоп лосс: 1.1220\nТейк профит: 1.1100",
+                  "#EURUSD ПОКУПАТЬ 1.1150\nСтоп лосс: 1.1100\nТейк профит: 1.1250",
                   "#EURUSD ПРОДАЖА 1.1180\nСтоп / отмена: 1.1220\nТейк профит: 1.1100"]:
             self.assertIsNone(parse(t), t)
+
+    def test_cancel(self):
+        for t in ["отмена", "Отменить", "отменить ордер"]:
+            self.assertEqual(parse(t).action, "CANCEL", t)
+
+    def test_breakeven(self):
+        for t in ["безубыток", "в безубыток", "Перенести стоп в безубыток"]:
+            self.assertEqual(parse(t).action, "MOVE_SL_BE", t)
 
 
 class RepostDedupeTests(unittest.TestCase):
