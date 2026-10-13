@@ -497,12 +497,35 @@ class App:
     def check_licence_async(self, then=None):
         self.set_status("licence", None, "Checking...")
         def run():
-            cfg = C.load(); ok, msg = licence.check(cfg.get("licence_key", ""), C.licence_url(cfg))
+            cfg = C.load(); key, url = cfg.get("licence_key", ""), C.licence_url(cfg)
+            ok, msg, cached = licence.check_full(key, url)
             self.set_status("licence", ok, msg if len(msg) < 60 else msg[:57] + "...")
             if not ok: self.log(f"Licence problem: {msg}")
             if then: self.q.put(("call", lambda: then(ok, msg)))
+            if ok and cached: self._licence_refresh(key, url)
         threading.Thread(target=run, daemon=True).start()
+        if not getattr(self, "_licence_timer", False):
+            self._licence_timer = True
+            self.root.after(licence.RECHECK_HOURS * 3600 * 1000, self._licence_recheck)
 
+    def _licence_recheck(self):
+        """Every RECHECK_HOURS while open, so long running copiers notice revocation or expiry."""
+        def run():
+            cfg = C.load(); self._licence_refresh(cfg.get("licence_key", ""), C.licence_url(cfg))
+        threading.Thread(target=run, daemon=True).start()
+        self.root.after(licence.RECHECK_HOURS * 3600 * 1000, self._licence_recheck)
+
+    def _licence_refresh(self, key, url):
+        """Quiet server check (runs on a worker thread). Stops copying only on a rejection, or once the grace has run out."""
+        ok, msg, rejected = licence.refresh(key, url)
+        self.set_status("licence", ok, msg if len(msg) < 60 else msg[:57] + "...")
+        if ok: return
+        self.log(f"Licence problem: {msg}")
+        def block():
+            if self.engine and self.engine.running():
+                self.stop(); self.log("Copying stopped because of the licence.")
+            messagebox.showerror("Licence", msg, parent=self.root)
+        self.q.put(("call", block))
 
     def set_running(self, on):
         self.btn_start["state"] = "disabled" if on else "normal"
