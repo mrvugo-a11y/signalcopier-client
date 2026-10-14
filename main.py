@@ -121,6 +121,12 @@ class ResultsWindow(tk.Toplevel):
                 else:
                     with lock: rows, cur = self.R.fetch(cfg, period)
                 self.app.q.put(("call", lambda: self.show(rows, cur)))
+                if self.R.missing_names(rows):     # look up titles Telegram knows, then show them (still off the UI thread)
+                    from copier import engine as E
+                    from copier.store import Store
+                    if self.R.backfill_names(cfg, rows, lambda ids: E.resolve_titles(cfg, ids),
+                                              (eng.store if eng and eng.running() and getattr(eng, "store", None) else Store())):
+                        self.app.q.put(("call", lambda: self.show(rows, cur)))
             except Exception as e:
                 msg = f"Could not read results: {e}"
                 self.app.q.put(("call", lambda: self.info.winfo_exists() and self.info.configure(text=msg)))

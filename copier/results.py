@@ -7,6 +7,48 @@ OUT_ENTRIES = (1, 2, 3)      # DEAL_ENTRY_OUT, DEAL_ENTRY_INOUT, DEAL_ENTRY_OUT_
 UNKNOWN = "Not tagged"
 
 
+def unknown_name(chat):
+    return f"Unknown channel ({chat})"
+
+
+def known_names(cfg, store_data):
+    """Titles from the trade store (also removed channels) and the current channel list, plus the
+    same id written with or without the -100 prefix."""
+    names = {}
+    for k, v in ((store_data or {}).get("names") or {}).items():
+        if v: names[str(k)] = v
+    for k, v in ((cfg or {}).get("channels") or {}).items():
+        n = (v or {}).get("name")
+        if n and n != str(k): names[str(k)] = n
+    for k, v in list(names.items()):
+        for alt in id_variants(k): names.setdefault(alt, v)
+    return names
+
+
+def id_variants(chat):
+    s = str(chat)
+    if s.startswith("-100"): return [s[4:], "-" + s[4:]]
+    if s.startswith("-"): return ["-100" + s[1:]]
+    if s.isdigit(): return ["-100" + s, "-" + s]
+    return []
+
+
+def missing_names(rows):
+    """Channel ids of rows still showing a fallback instead of a title."""
+    return [r["channel"] for r in rows if r["channel"] != UNKNOWN and r.get("unresolved")]
+
+
+def apply_names(rows, names):
+    for r in rows:
+        if r["channel"] == UNKNOWN: continue
+        n = names.get(str(r["channel"]))
+        if not n:
+            for alt in id_variants(r["channel"]):
+                if names.get(alt): n = names[alt]; break
+        r["name"] = n or unknown_name(r["channel"]); r["unresolved"] = not n
+    return rows
+
+
 def period_start(period, now=None):
     now = time.time() if now is None else now
     if period is None: return 0
@@ -22,6 +64,22 @@ def ticket_map(store_data):
         chat = key.split(":", 1)[0]
         for t in rec.get("tickets") or []: out.setdefault(int(t), chat)
     return out
+
+
+def backfill_names(cfg, rows, resolver, store=None):
+    """Looks up titles for rows that still show a fallback, remembers them, and updates the rows.
+    resolver(ids) -> {id: title}. Returns True if any row changed."""
+    ids = missing_names(rows)
+    if not ids: return False
+    try: found = resolver(ids) or {}
+    except Exception: found = {}
+    found = {str(k): v for k, v in found.items() if v}
+    if not found: return False
+    if store is not None:
+        try: store.set_names(found)
+        except Exception: pass
+    apply_names(rows, found if not store else dict(known_names(cfg, store.data), **found))
+    return True
 
 
 def _g(d, k, default=0):
@@ -49,7 +107,7 @@ def aggregate(deals, tickets, names=None, since=0, magic=None, include_untagged=
         if chat is None:
             if not include_untagged or (magic is not None and p["magic"] != magic): continue
             chat = UNKNOWN
-        r = rows.setdefault(chat, {"channel": chat, "name": names.get(chat, UNKNOWN if chat == UNKNOWN else chat),
+        r = rows.setdefault(chat, {"channel": chat, "name": UNKNOWN,
                                    "profit": 0.0, "loss": 0.0, "net": 0.0, "trades": 0, "wins": 0})
         m = round(p["money"], 2)
         r["trades"] += 1; r["net"] += m
@@ -60,6 +118,7 @@ def aggregate(deals, tickets, names=None, since=0, magic=None, include_untagged=
         r["net"] = round(r["net"], 2); r["profit"] = round(r["profit"], 2); r["loss"] = round(r["loss"], 2)
         r["win_rate"] = round(100.0 * r["wins"] / r["trades"], 1) if r["trades"] else 0.0
         out.append(r)
+    apply_names(out, names)
     return sorted(out, key=lambda r: r["net"], reverse=True)
 
 
@@ -76,7 +135,7 @@ def fetch(cfg, period, mt5=None, store_data=None, now=None):
     from datetime import datetime
     # opening deals can be older than the period, so read a wider window for matching
     deals = mt5.history_deals_get(datetime.fromtimestamp(max(0, since - 90 * 86400)), datetime.fromtimestamp(now + 86400)) or []
-    names = {k: v.get("name", k) for k, v in (cfg.get("channels") or {}).items()}
+    names = known_names(cfg, store_data)
     ai = mt5.account_info()
     magic = int(cfg.get("magic_number", 0) or 0) or None
     rows = aggregate(deals, ticket_map(store_data), names, since, magic, include_untagged=magic is not None)

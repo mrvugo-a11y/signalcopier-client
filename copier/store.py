@@ -22,6 +22,8 @@ class Store:
         """record = {symbol, side, entry, sl, tickets:[...]}"""
         with self.lock:
             self.data["signals"][f"{chat_id}:{msg_id}"] = record
+            if record.get("channel_name"):
+                self.data.setdefault("names", {})[str(chat_id)] = record["channel_name"]
             tm = self.data.setdefault("tickets", {})     # permanent ticket to channel map, for Channel results
             for t in record.get("tickets") or []: tm[str(t)] = str(chat_id)
             self.data["last"][str(chat_id)] = msg_id
@@ -29,6 +31,15 @@ class Store:
                 for k in list(self.data["signals"])[:500]:
                     del self.data["signals"][k]
             self._save()
+
+    def set_names(self, names):
+        """Remembers channel titles {chat_id: title} (used by Channel results, also for removed channels)."""
+        names = {str(k): v for k, v in (names or {}).items() if v}
+        if not names: return
+        with self.lock:
+            cur = self.data.setdefault("names", {})
+            if all(cur.get(k) == v for k, v in names.items()): return
+            cur.update(names); self._save()
 
     def has_trade(self, chat_id, trade_id):
         """True if this channel's trade number was already copied (channels may repost it)."""

@@ -191,6 +191,48 @@ def safe_list_channels(cfg, ask, log, timeout=300):
         return None
 
 
+def _title(ent):
+    t = getattr(ent, "title", None)
+    if not t:
+        t = " ".join(x for x in (getattr(ent, "first_name", None), getattr(ent, "last_name", None)) if x)
+    if t: return t
+    u = getattr(ent, "username", None)
+    return f"@{u}" if u else None
+
+
+async def _resolve_titles(cfg, ids):
+    client = await service().get_client(cfg)
+    if not await client.is_user_authorized(): return {}
+    out, missing = {}, []
+    for i in ids:
+        try:
+            t = _title(await client.get_entity(int(i)))
+            if t: out[str(i)] = t
+            else: missing.append(str(i))
+        except Exception:
+            missing.append(str(i))
+    if missing:                                    # not in the session cache: look through the dialog list
+        want = set(missing)
+        async for d in client.iter_dialogs():
+            k = str(d.id)
+            if k in want:
+                t = d.name or _title(d.entity)
+                if t: out[k] = t
+                want.discard(k)
+                if not want: break
+    return out
+
+
+def resolve_titles(cfg, ids, timeout=60):
+    """Blocking (worker thread only). {chat_id: title} for the ids Telegram knows. Never asks to log in, never raises."""
+    ids = [str(i) for i in ids if str(i).lstrip("-").isdigit()]
+    if not ids: return {}
+    try:
+        return service().run(_resolve_titles(cfg, ids), timeout) or {}
+    except BaseException:
+        return {}
+
+
 def list_channels(cfg, ask):
     return login_and_list(cfg, ask)[1]
 
@@ -239,6 +281,10 @@ class Engine:
         if not chans:
             raise RuntimeError("No channels are ticked. Click Channels and tick at least one.")
         self.store = Store()
+        try:                                       # remember every known channel title for Channel results
+            self.store.set_names({k: v.get("name") for k, v in self.cfg.get("channels", {}).items()
+                                  if v.get("name") and v.get("name") != str(k)})
+        except Exception: pass
         self.ex = Executor(self.cfg, self.log)
         try:
             self.ex.connect()
@@ -289,7 +335,8 @@ class Engine:
         if tickets:
             self.store.put(chat_id, msg_id, {"symbol": sig.symbol, "side": sig.side, "sl": sig.sl,
                                              "tps": sig.tps, "tickets": tickets,
-                                             "tp1": getattr(self.ex, "last_tp1", None)})
+                                             "tp1": getattr(self.ex, "last_tp1", None),
+                                             "channel_name": self._name(chat_id)})
             self.store.mark_trade(chat_id, tid, msg_id)
 
     def _check_break_even(self):
