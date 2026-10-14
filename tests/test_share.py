@@ -44,8 +44,16 @@ class Stats(unittest.TestCase):
             def __exit__(s, *a): pass
         def opener(req, timeout): got["url"] = req.full_url; got["body"] = json.loads(req.data); return R()
         self.assertTrue(SH.send(CFG, self.rows(), opener))
-        self.assertEqual(got["url"], "https://site.example/api/channel-stats")
+        self.assertEqual(got["url"], SH.endpoint(CFG))          # the built in site when the build bakes one in
+        self.assertTrue(got["url"].endswith("/api/channel-stats"))
         self.assertEqual(got["body"]["key"], "KEY1")
+
+    def test_endpoint_from_licence_url(self):
+        from unittest import mock
+        with mock.patch.object(C.AC, "LICENCE_URL", ""):
+            self.assertEqual(SH.endpoint(CFG), "https://site.example/api/channel-stats")
+        with mock.patch.object(C.AC, "LICENCE_URL", "https://built.in/api/licence"):
+            self.assertEqual(SH.endpoint(CFG), "https://built.in/api/channel-stats")
 
     def test_nothing_sent_when_unticked(self):
         def opener(*a, **k): raise AssertionError("must not send")
