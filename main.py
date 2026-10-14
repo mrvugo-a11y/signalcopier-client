@@ -104,6 +104,9 @@ class ResultsWindow(tk.Toplevel):
         ttk.Label(self, text="Closed trades only, including swap and commission. Trades copied before version 1.2.8 "
                   "are matched while their signal is still remembered; older ones show as Not tagged.",
                   foreground=GREY, wraplength=690, padding=(12, 0, 12, 8)).pack(anchor="w")
+        if C.load().get("share_results", True):
+            ttk.Label(self, text="Your channel results (no account details) are shared with SignalPilot to rank signal providers. "
+                      "You can switch this off in Settings.", foreground=GREY, wraplength=690, padding=(12, 0, 12, 8)).pack(anchor="w")
         self.refresh()
 
     def refresh(self):

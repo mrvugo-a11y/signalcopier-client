@@ -1,9 +1,10 @@
 """Telegram listener: ties the parser, the ticket store and the MT5 executor together."""
-import asyncio, os, threading
+import asyncio, os, threading, time
 from . import config as C
 from .parser import parse, parse_command, parse_update, Signal, Command
 from .store import Store
 from .executor import Executor
+from . import share as SH
 
 
 def session_path():
@@ -200,13 +201,15 @@ def _title(ent):
     return f"@{u}" if u else None
 
 
-async def _resolve_titles(cfg, ids):
+async def _resolve_titles(cfg, ids, usernames=None):
     client = await service().get_client(cfg)
     if not await client.is_user_authorized(): return {}
     out, missing = {}, []
     for i in ids:
         try:
-            t = _title(await client.get_entity(int(i)))
+            ent = await client.get_entity(int(i))
+            if usernames is not None and getattr(ent, "username", None): usernames[str(i)] = ent.username
+            t = _title(ent)
             if t: out[str(i)] = t
             else: missing.append(str(i))
         except Exception:
@@ -216,6 +219,7 @@ async def _resolve_titles(cfg, ids):
         async for d in client.iter_dialogs():
             k = str(d.id)
             if k in want:
+                if usernames is not None and getattr(d.entity, "username", None): usernames[k] = d.entity.username
                 t = d.name or _title(d.entity)
                 if t: out[k] = t
                 want.discard(k)
@@ -223,12 +227,13 @@ async def _resolve_titles(cfg, ids):
     return out
 
 
-def resolve_titles(cfg, ids, timeout=60):
-    """Blocking (worker thread only). {chat_id: title} for the ids Telegram knows. Never asks to log in, never raises."""
+def resolve_titles(cfg, ids, timeout=60, usernames=None):
+    """Blocking (worker thread only). {chat_id: title} for the ids Telegram knows. Never asks to log in, never raises.
+    Pass a dict as usernames to also collect channel usernames."""
     ids = [str(i) for i in ids if str(i).lstrip("-").isdigit()]
     if not ids: return {}
     try:
-        return service().run(_resolve_titles(cfg, ids), timeout) or {}
+        return service().run(_resolve_titles(cfg, ids, usernames), timeout) or {}
     except BaseException:
         return {}
 
@@ -309,12 +314,16 @@ class Engine:
         try:
             self.status("telegram", True, "Connected")
             self.log("Copying is ON. Watching: " + ", ".join(v.get("name", k) for k, v in chans.items()))
+            self._last_share = time.monotonic()
             while not self.stop_event.wait(5):
                 self._check_break_even()
+                if time.monotonic() - self._last_share >= SH.INTERVAL:
+                    self._last_share = time.monotonic(); self._share_results()
                 if not self.client.is_connected():      # network dropped: reconnect the same client
                     try: svc.run(svc.get_client(self.cfg), 60)
                     except Exception as e: self.log(f"Telegram reconnect failed, retrying: {friendly_error(e)}")
         finally:
+            self._share_results()                  # on Stop as well
             try: svc.run(detach(self.client), 10)
             except Exception: pass
             svc.save(); self.client = None
@@ -338,6 +347,32 @@ class Engine:
                                              "tp1": getattr(self.ex, "last_tp1", None),
                                              "channel_name": self._name(chat_id)})
             self.store.mark_trade(chat_id, tid, msg_id)
+
+    def _share_results(self):
+        """Crowd ranking: per channel results only. Reads MT5 here, sends in the background. Never raises."""
+        try:
+            cfg = C.load()
+            if not SH.enabled(cfg): return
+            with self.mt5_lock:
+                from .executor import mt5
+                if mt5 is None: return
+                rows = SH.collect(cfg, mt5, self.store.data)
+            if not rows: return
+            def bg():
+                try:
+                    un = {}
+                    titles = resolve_titles(cfg, [r["id"] for r in rows], usernames=un)
+                    if titles: self.store.set_names(titles)
+                    if un: self.store.set_usernames(un)
+                    for r in rows:
+                        if titles.get(r["id"]) and not titles[r["id"]].startswith("@"): r["title"] = titles[r["id"]]
+                        r["username"] = un.get(r["id"]) or r.get("username")
+                    SH.send(cfg, rows)
+                except Exception:
+                    pass
+            threading.Thread(target=bg, daemon=True).start()
+        except Exception:
+            pass
 
     def _check_break_even(self):
         """Break even after TP1 (only when the customer ticked it for that channel)."""

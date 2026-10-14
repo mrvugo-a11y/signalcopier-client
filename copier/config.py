@@ -18,7 +18,7 @@ DEFAULTS = {
     "telegram_api_id": 0, "telegram_api_hash": "", "telegram_phone": "",
     "mt5_path": "", "mt5_login": 0, "mt5_password": "", "mt5_server": "",
     "channels": {}, "default_settings": DEFAULT_SETTINGS,
-    "setup_done": False, "minimise_to_tray": True, "start_copying_on_launch": False,
+    "setup_done": False, "share_results": True, "minimise_to_tray": True, "start_copying_on_launch": False,
 }
 
 

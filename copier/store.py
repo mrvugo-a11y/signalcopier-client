@@ -41,6 +41,14 @@ class Store:
             if all(cur.get(k) == v for k, v in names.items()): return
             cur.update(names); self._save()
 
+    def set_usernames(self, names):
+        names = {str(k): v for k, v in (names or {}).items() if v}
+        if not names: return
+        with self.lock:
+            cur = self.data.setdefault("usernames", {})
+            if all(cur.get(k) == v for k, v in names.items()): return
+            cur.update(names); self._save()
+
     def has_trade(self, chat_id, trade_id):
         """True if this channel's trade number was already copied (channels may repost it)."""
         return bool(trade_id) and f"{chat_id}:{trade_id}" in self.data.get("trade_ids", {})
