@@ -302,14 +302,18 @@ class Executor:
             for p in positions: self._modify(p, sl=cmd.value)
             for o in orders: self._modify_order(o, sl=cmd.value)
         elif a == "TP_HIT":
-            act = st.get("tp_hit_action", "move_sl_be")
-            if act == "move_sl_be":
+            act = st.get("tp_hit_action", "none")
+            if act == "move_sl_be": act = "none"            # old choice, the tick box decides now
+            be = st.get("be_after_tp1", False)
+            if be and act == "none":
                 for p in positions: self._modify(p, sl=p.price_open)
-            elif act == "close_half":
+            elif not be and act == "none":
+                self.log("The channel says a take profit was hit. Stop loss left as it is, because the break even tick box in Settings is off.")
+            if act == "close_half":
                 for p in positions: self._close(p, 0.5)
             elif act == "close_all":
                 for p in positions: self._close(p)
-            if act != "none":
+            if act != "none" or be:
                 for o in orders: self._cancel(o)   # TP already reached -> pending entries are stale
         elif a == "SL_HIT":
             for p in positions: self._close(p)

@@ -26,7 +26,7 @@ class TestConfig(Home):
         cfg = C.load()
         self.assertEqual(cfg["licence_key"], "ABC")
         self.assertEqual(cfg["default_settings"]["fixed_lot"], 0.05)
-        self.assertEqual(cfg["default_settings"]["tp_hit_action"], "move_sl_be")
+        self.assertEqual(cfg["default_settings"]["tp_hit_action"], "none")
         cfg["channels"] = {"-100": {"name": "X", "enabled": True, "settings": {}}}; C.save(cfg)
         self.assertEqual(C.load()["channels"]["-100"]["name"], "X")
 

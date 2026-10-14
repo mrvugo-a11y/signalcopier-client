@@ -110,7 +110,54 @@ class BE(unittest.TestCase):
         self.assertEqual(self.ex.last_tp1, 1955)
 
 
+class TPHitMessage(BE):
+    def test_tp_hit_message_box_off_does_nothing(self):
+        self.buy(2, 1960)
+        self.ex.apply(Command("TP_HIT", value=1), [2], {"be_after_tp1": False, "tp_hit_action": "none"})
+        self.assertEqual(self.sltp(), [])
+        self.assertTrue(any("break even tick box" in l for l in self.logs))
+
+    def test_tp_hit_message_box_on_moves(self):
+        self.buy(2, 1960)
+        self.ex.apply(Command("TP_HIT", value=1), [2], {"be_after_tp1": True, "tp_hit_action": "none"})
+        self.assertEqual([(r["position"], r["sl"]) for r in self.sltp()], [(2, 1950.0)])
+
+    def test_old_move_sl_be_value_follows_box(self):
+        self.buy(2, 1960)
+        self.ex.apply(Command("TP_HIT", value=1), [2], {"be_after_tp1": False, "tp_hit_action": "move_sl_be"})
+        self.assertEqual(self.sltp(), [])
+
+    def test_breakeven_command_works_with_box_on_too(self):
+        self.buy(1, 1955)
+        self.ex.apply(Command("MOVE_SL_BE"), [1], {"be_after_tp1": True})
+        self.assertEqual(len(self.sltp()), 1)
+
+
 class Setting(unittest.TestCase):
+    def test_tp_hit_default_and_choices(self):
+        self.assertEqual(C.DEFAULT_SETTINGS["tp_hit_action"], "none")
+        opts = [v for v, _ in dict((f[0], f[3]) for f in S.TRADE_FIELDS)["tp_hit_action"]]
+        self.assertNotIn("move_sl_be", opts)
+        for t in S.all_ui_text(): self.assertNotIn("-", t)
+
+    def test_migration_of_old_value(self):
+        import tempfile, json
+        d = tempfile.mkdtemp(); os.environ["SIGNALPILOT_HOME"] = d
+        try:
+            with open(os.path.join(d, "config.json"), "w") as fh:
+                json.dump({"default_settings": {"tp_hit_action": "move_sl_be"},
+                           "channels": {"-1": {"name": "A", "settings": {"tp_hit_action": "move_sl_be"}},
+                                        "-2": {"name": "B", "settings": {"tp_hit_action": "close_half"}}}}, fh)
+            cfg = C.load()
+            self.assertEqual(cfg["default_settings"]["tp_hit_action"], "none")
+            self.assertEqual(cfg["channels"]["-1"]["settings"]["tp_hit_action"], "none")
+            self.assertEqual(cfg["channels"]["-2"]["settings"]["tp_hit_action"], "close_half")
+            self.assertIs(cfg["default_settings"]["be_after_tp1"], False)
+            with open(os.path.join(d, "config.json")) as fh: saved = json.load(fh)
+            self.assertEqual(saved["default_settings"]["tp_hit_action"], "none")
+        finally:
+            os.environ.pop("SIGNALPILOT_HOME", None)
+
     def test_default_off_and_label(self):
         self.assertIs(C.DEFAULT_SETTINGS["be_after_tp1"], False)
         f = [x for x in S.TRADE_FIELDS if x[0] == "be_after_tp1"][0]
