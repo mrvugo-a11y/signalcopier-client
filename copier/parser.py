@@ -66,6 +66,20 @@ RU_RESULT_RE = re.compile(r"ЗАКРЫЛ(?:СЯ|АСЬ|ИСЬ)?\s+(?:В\s+)?(?:�
                           r"|ЗАБРАЛИ|ОТРАБОТКА\s+АНАЛИТИКИ", re.I)
 
 
+# Result / status updates ("XAU/USD SELL hit TP1 +75 pips", "TP2 hit +120 pips", "SL hit",
+# "+75 pips running") report on an existing trade and must never be opened as a new trade.
+OUTCOME_RE = re.compile(
+    r"\bHIT\b|\bREACHED\b|\bSMASHED\b|\bACHIEVED\b|\bSTOPPED\s*OUT\b|\bCLOSED\b|\bRUNNING\b"
+    r"|\bIN\s*(?:PROFIT|PROFITS|LOSS)\b|\bBOOKED\b|\bSECURED\b|\bBOOM\b"
+    r"|[+-]\s*\d+(?:[.,]\d+)?\s*(?:PIPS?|POINTS?|PTS)\b|\bPIPS?\s*(?:PROFIT|GAIN|LOSS)\b"
+    r"|\bTP\s*\d\s*(?:DONE|\+)|\bPROFIT\s*(?:BOOKED|TAKEN|SECURED)\b")
+
+
+def is_outcome(t: str) -> bool:
+    """True when normalised text reports a result/status rather than giving a new trade."""
+    return bool(OUTCOME_RE.search(t))
+
+
 def trade_id(text: str) -> Optional[str]:
     m = RU_TRADE_ID_RE.search(text or "")
     return m.group(1) if m else None
@@ -168,6 +182,8 @@ def parse_signal(text: str) -> Optional[Signal]:
     sl, tps = _sl_tps(t)
     if sl is None and not tps:
         return None  # not a full signal (avoid "buy the dip" chatter)
+    if is_outcome(t) and sl is None:
+        return None  # result/status update (e.g. "SELL hit TP1 +75 pips"), not a new trade
     # entry: search in text before first SL/TP keyword, excluding symbol digits
     cut = re.search(r"\b(SL|TP)\b", t)
     head = t[: cut.start()] if cut else t
@@ -207,6 +223,8 @@ def parse_update(text: str) -> Optional[Command]:
         return None   # reposted analysis / results report replying to a post is not a modification
     t = normalise(text)
     sl, tps = _sl_tps(t)
+    if is_outcome(t) and sl is None:
+        return None   # "TP1 +75 pips" is a result, not new take profit values
     if sl is not None or tps:
         return Command("MODIFY", sl=sl, tps=tps)
     return None
