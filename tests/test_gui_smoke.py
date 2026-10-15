@@ -1,5 +1,5 @@
 """Opens the main window, wizard and settings window under a virtual display (skipped without Tk or a display)."""
-import os, sys, tempfile, unittest
+import gc, os, sys, tempfile, unittest
 from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 try:
@@ -13,6 +13,9 @@ class TestGui(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.env = mock.patch.dict(os.environ, {"SIGNALPILOT_HOME": self.tmp.name}); self.env.start()
     def tearDown(self):
+        # Free leftover Tk variables here, on the main thread. If the garbage collector frees them
+        # later from a worker thread (e.g. the engine thread in test_session_lock), Tk can hang on Windows.
+        gc.collect()
         self.env.stop(); self.tmp.cleanup()
 
     def test_windows_open_and_settings_save(self):
