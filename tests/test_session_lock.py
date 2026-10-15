@@ -46,7 +46,7 @@ class TestSingleClient(unittest.TestCase):
     def tearDown(self):
         E.make_client, E.Executor, E.C.load = self.saved; E.reset_service()
 
-    def _wait(self, cond, t=10):
+    def _wait(self, cond, t=40):   # first telethon import can be slow on CI Windows runners
         end = time.time() + t
         while time.time() < end:
             if cond(): return True
