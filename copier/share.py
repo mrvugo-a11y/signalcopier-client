@@ -6,6 +6,7 @@ from datetime import datetime
 from . import config as C, results as R
 
 INTERVAL = 3600
+FIRST_DELAY = 120     # first upload two minutes after copying starts, not an hour later
 FIELDS = ("id", "title", "username", "trades", "wins", "losses", "net_r", "r_trades", "net_pips",
           "profit_pct", "first_trade", "last_trade")
 
@@ -103,13 +104,24 @@ def payload(cfg, channels):
             "channels": [{k: c.get(k) for k in FIELDS} for c in channels]}
 
 
-def send(cfg, channels, opener=urllib.request.urlopen, timeout=20):
-    """Posts the results. Returns True on success. Never raises. Sends nothing when sharing is off."""
+def first_due(now, interval=INTERVAL, delay=FIRST_DELAY):
+    """Value for the 'last shared' clock so the first upload happens `delay` seconds after start."""
+    return now - interval + delay
+
+
+def send(cfg, channels, opener=urllib.request.urlopen, timeout=60, log=None):
+    """Posts the results. Returns True on success. Never raises. Sends nothing when sharing is off.
+    log(msg), when given, receives one line saying whether the upload worked and why not."""
+    say = log or (lambda m: None)
     if not enabled(cfg) or not channels: return False
     try:
         req = urllib.request.Request(endpoint(cfg), data=json.dumps(payload(cfg, channels)).encode(),
                                      headers={"Content-Type": "application/json"}, method="POST")
         with opener(req, timeout=timeout) as r:
-            return 200 <= getattr(r, "status", 200) < 300
-    except Exception:
+            ok = 200 <= getattr(r, "status", 200) < 300
+        say(f"Shared results for {len(channels)} channel(s) with SignalPilot." if ok
+            else f"Sharing channel results failed (server answered {getattr(r, 'status', '?')}).")
+        return ok
+    except Exception as e:
+        say(f"Sharing channel results failed: {e}")
         return False

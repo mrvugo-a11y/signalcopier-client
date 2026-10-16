@@ -314,7 +314,7 @@ class Engine:
         try:
             self.status("telegram", True, "Connected")
             self.log("Copying is ON. Watching: " + ", ".join(v.get("name", k) for k, v in chans.items()))
-            self._last_share = time.monotonic()
+            self._last_share = SH.first_due(time.monotonic())
             while not self.stop_event.wait(5):
                 self._check_break_even()
                 if time.monotonic() - self._last_share >= SH.INTERVAL:
@@ -323,7 +323,7 @@ class Engine:
                     try: svc.run(svc.get_client(self.cfg), 60)
                     except Exception as e: self.log(f"Telegram reconnect failed, retrying: {friendly_error(e)}")
         finally:
-            self._share_results()                  # on Stop as well
+            self._share_results(wait=True)         # on Stop as well (wait, the app may be closing)
             try: svc.run(detach(self.client), 10)
             except Exception: pass
             svc.save(); self.client = None
@@ -348,16 +348,20 @@ class Engine:
                                              "channel_name": self._name(chat_id)})
             self.store.mark_trade(chat_id, tid, msg_id)
 
-    def _share_results(self):
+    def _share_results(self, wait=False):
         """Crowd ranking: per channel results only. Reads MT5 here, sends in the background. Never raises."""
         try:
             cfg = C.load()
-            if not SH.enabled(cfg): return
+            if not SH.enabled(cfg):
+                if cfg.get("share_results", True) and not (cfg.get("licence_key") or "").strip():
+                    self.log("Channel results not shared: no licence key entered.")
+                return
             with self.mt5_lock:
                 from .executor import mt5
                 if mt5 is None: return
                 rows = SH.collect(cfg, mt5, self.store.data)
-            if not rows: return
+            if not rows:
+                self.log("Channel results not shared yet: no closed copied trades found in MT5 history."); return
             def bg():
                 try:
                     un = {}
@@ -367,12 +371,14 @@ class Engine:
                     for r in rows:
                         if titles.get(r["id"]) and not titles[r["id"]].startswith("@"): r["title"] = titles[r["id"]]
                         r["username"] = un.get(r["id"]) or r.get("username")
-                    SH.send(cfg, rows)
-                except Exception:
-                    pass
-            threading.Thread(target=bg, daemon=True).start()
-        except Exception:
-            pass
+                    SH.send(cfg, rows, log=self.log)
+                except Exception as e:
+                    self.log(f"Sharing channel results failed: {e}")
+            t = threading.Thread(target=bg, daemon=True); t.start()
+            if wait: t.join(90)
+        except Exception as e:
+            try: self.log(f"Sharing channel results failed: {e}")
+            except Exception: pass
 
     def _check_break_even(self):
         """Break even after TP1 (only when the customer ticked it for that channel)."""

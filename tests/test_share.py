@@ -85,5 +85,25 @@ class Setting(unittest.TestCase):
         self.assertIn("Your channel results (no account details) are shared with SignalPilot to rank signal providers.", src)
 
 
+class FirstUploadAndLogging(unittest.TestCase):
+    def test_first_upload_two_minutes_after_start(self):
+        last = SH.first_due(10000.0)
+        self.assertFalse(10000.0 + 119 - last >= SH.INTERVAL)
+        self.assertTrue(10000.0 + SH.FIRST_DELAY - last >= SH.INTERVAL)
+
+    def test_send_logs_success_and_failure(self):
+        class R:
+            status = 200
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+        msgs = []
+        rows = [{"id": "-100123", "trades": 1}]
+        self.assertTrue(SH.send(CFG, rows, lambda req, timeout: R(), log=msgs.append))
+        self.assertIn("Shared results for 1 channel(s)", msgs[-1])
+        def boom(req, timeout): raise OSError("no network")
+        self.assertFalse(SH.send(CFG, rows, boom, log=msgs.append))
+        self.assertIn("failed: no network", msgs[-1])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
