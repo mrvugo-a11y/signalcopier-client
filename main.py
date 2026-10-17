@@ -8,6 +8,13 @@ from copier.branding import BRAND_NAME, SUPPORT_TEXT
 GREEN, RED, GREY, AMBER = "#1a7f37", "#c62828", "#777777", "#b26a00"
 
 
+
+# Lines kept out of the customer's activity box (still written to copier.log for support).
+_FILE_ONLY_PREFIXES = ("Shared results for", "Sharing channel results failed", "Channel results not shared yet")
+def _file_only(line):
+    body = line.split("  ", 1)[-1] if line[:2].isdigit() else line
+    return any(body.startswith(p) or line.startswith(p) for p in _FILE_ONLY_PREFIXES)
+
 class Cancelled(Exception):
     pass
 
@@ -573,9 +580,10 @@ class App:
         u = line.upper()
         tag = "trade" if "TRADE " in u else "signal" if "SIGNAL" in u else "bad" if any(w in u for w in ("PROBLEM", "REJECT", "COULD NOT", "FAILED")) \
             else "warn" if any(w in u for w in ("WARNING", "SKIPPED")) else None
-        self.logbox.configure(state="normal"); self.logbox.insert("end", line + "\n", tag)
-        if int(self.logbox.index("end").split(".")[0]) > 1500: self.logbox.delete("1.0", "500.0")
-        self.logbox.see("end"); self.logbox.configure(state="disabled")
+        if not _file_only(line):
+            self.logbox.configure(state="normal"); self.logbox.insert("end", line + "\n", tag)
+            if int(self.logbox.index("end").split(".")[0]) > 1500: self.logbox.delete("1.0", "500.0")
+            self.logbox.see("end"); self.logbox.configure(state="disabled")
         try:
             p = C.path("copier.log")
             if os.path.exists(p) and os.path.getsize(p) > 5_000_000: os.replace(p, p + ".old")
