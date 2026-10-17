@@ -359,7 +359,7 @@ class Engine:
             with self.mt5_lock:
                 from .executor import mt5
                 if mt5 is None: return
-                rows = SH.collect(cfg, mt5, self.store.data)
+                rows = SH.collect(cfg, mt5, self.store.data, log=self.log)
             if not rows:
                 self.log("Channel results not shared yet: no closed copied trades found in MT5 history."); return
             def bg():

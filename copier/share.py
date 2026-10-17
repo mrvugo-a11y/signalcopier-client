@@ -3,7 +3,7 @@ Only these fields leave the computer: channel id, title, username, trades, wins,
 trades had a stop loss so R is known), net pips, profit as a percent, first and last trade date."""
 import json, time, urllib.request
 from datetime import datetime
-from . import config as C, results as R
+from . import config as C, results as R, mt5hist as H
 
 INTERVAL = 3600
 FIRST_DELAY = 120     # first upload two minutes after copying starts, not an hour later
@@ -90,12 +90,13 @@ def channel_stats(deals, tickets, sls, names, usernames, balance, symbol_info):
     return out
 
 
-def collect(cfg, mt5, store_data):
+def collect(cfg, mt5, store_data, log=None):
     """Reads MT5 history (MT5 already connected, caller holds the MT5 lock). Returns the list to send."""
-    deals = mt5.history_deals_get(datetime.fromtimestamp(0), datetime.fromtimestamp(time.time() + 86400)) or []
+    tickets = R.ticket_map(store_data)
+    deals = H.deals(mt5, None, time.time() + 86400, positions=tickets.keys(), log=log)
     ai = mt5.account_info()
     balance = float(getattr(ai, "balance", 0) or 0)       # used only to work out the percent, never sent
-    return channel_stats(deals, R.ticket_map(store_data), sl_map(store_data), R.known_names(cfg, store_data),
+    return channel_stats(deals, tickets, sl_map(store_data), R.known_names(cfg, store_data),
                          dict(store_data.get("usernames") or {}), balance, mt5.symbol_info)
 
 

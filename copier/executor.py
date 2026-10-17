@@ -205,10 +205,8 @@ class Executor:
     # ---------- break even after TP1 ----------
     def _closed_at_tp(self, ticket, tp1):
         """True if this position is closed and its closing deal was a take profit (or at the TP1 price)."""
-        try:
-            deals = mt5.history_deals_get(position=ticket) or []
-        except Exception:
-            deals = []
+        from . import mt5hist as H
+        deals = H.position_deals(mt5, ticket)
         reason_tp = getattr(mt5, "DEAL_REASON_TP", 5)
         entry_out = getattr(mt5, "DEAL_ENTRY_OUT", 1)
         for d in deals:

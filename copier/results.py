@@ -134,9 +134,11 @@ def fetch(cfg, period, mt5=None, store_data=None, now=None):
     since = period_start(period, now)
     from datetime import datetime
     # opening deals can be older than the period, so read a wider window for matching
-    deals = mt5.history_deals_get(datetime.fromtimestamp(max(0, since - 90 * 86400)), datetime.fromtimestamp(now + 86400)) or []
+    from . import mt5hist as H
+    tm = ticket_map(store_data)
+    deals = H.deals(mt5, since - 90 * 86400 if since else None, now + 86400, positions=tm.keys())
     names = known_names(cfg, store_data)
     ai = mt5.account_info()
     magic = int(cfg.get("magic_number", 0) or 0) or None
-    rows = aggregate(deals, ticket_map(store_data), names, since, magic, include_untagged=magic is not None)
+    rows = aggregate(deals, tm, names, since, magic, include_untagged=magic is not None)
     return rows, getattr(ai, "currency", "") if ai else ""
