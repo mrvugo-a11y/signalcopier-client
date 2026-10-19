@@ -2,7 +2,7 @@
 ; Build: iscc installer.iss   (after PyInstaller has produced dist\SignalPilot)
 #define AppName "SignalPilot"
 #ifndef AppVersion
-  #define AppVersion "1.3.11"
+  #define AppVersion "1.3.12"
 #endif
 
 [Setup]

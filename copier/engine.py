@@ -1,7 +1,7 @@
 """Telegram listener: ties the parser, the ticket store and the MT5 executor together."""
 import asyncio, os, threading, time
 from . import config as C
-from .parser import parse, parse_command, parse_update, Signal, Command
+from .parser import parse, parse_command, parse_update, parse_signal, is_ru_info, Signal, Command
 from .store import Store
 from .executor import Executor
 from . import share as SH
@@ -335,7 +335,7 @@ class Engine:
     def _name(self, chat_id):
         return self.cfg["channels"].get(str(chat_id), {}).get("name", str(chat_id))
 
-    def _open(self, chat_id, msg_id, sig, st):
+    def _open(self, chat_id, msg_id, sig, st, parent_id=None):
         tid = getattr(sig, "trade_id", None)
         if tid and self.store.has_trade(chat_id, tid):
             self.log(f"[{self._name(chat_id)}] trade #{tid} was already copied, ignoring repost"); return
@@ -347,6 +347,29 @@ class Engine:
                                              "tp1": getattr(self.ex, "last_tp1", None),
                                              "channel_name": self._name(chat_id)})
             self.store.mark_trade(chat_id, tid, msg_id)
+            if parent_id:      # opened from a reply: later replies to the parent message find these trades too
+                self.store.alias(chat_id, parent_id, msg_id)
+
+    async def _signal_from_reply(self, ev, chat_id, reply_id, text):
+        """A reply (or an edited reply) that is itself the full signal: entry or zone, stop loss and take
+        profits, while the short parent message ('XAUUSD BUY NOW') never opened a trade. The symbol and
+        direction are taken from the parent when the reply leaves them out. Returns a Signal or None."""
+        if self.store.get(chat_id, reply_id): return None          # a trade exists: this is a modify
+        upd = parse_update(text)
+        if not upd or upd.sl is None or not upd.tps: return None   # not complete enough to be a new trade
+        try:
+            parent = await ev.message.get_reply_message()
+        except Exception:
+            parent = None
+        ptext = (getattr(parent, "raw_text", None) or getattr(parent, "message", None) or "") if parent else ""
+        if not ptext or is_ru_info(ptext): return None
+        if parse_signal(ptext): return None   # the parent was a full signal on its own and was skipped on purpose
+        return parse_signal(ptext + "\n" + text)
+
+    def _log_signal(self, chat, s, prefix="SIGNAL received"):
+        self.log(f"[{self._name(chat)}] {prefix}: {s.side} {s.symbol}"
+                 f"{' ' + s.order_type if s.order_type and s.order_type.upper() != 'MARKET' else ''}, entry {s.entry or 'now'}"
+                 f"{' to ' + str(s.entry_high) if s.entry_high else ''}, stop loss {s.sl or 'none'}, take profits {', '.join(map(str, s.tps)) or 'none'}")
 
     def _share_results(self, wait=False):
         """Crowd ranking: per channel results only. Reads MT5 here, sends in the background. Never raises."""
@@ -385,8 +408,13 @@ class Engine:
         if not hasattr(self, "_be_warned"): self._be_warned = set()
         try:
             for key, rec in list(self.store.data.get("signals", {}).items()):
-                if rec.get("be_done") or not rec.get("tickets"): continue
                 chat_id, msg_id = key.rsplit(":", 1)
+                if rec.get("be_retry"):                 # channel said 'move SL to BE' but the broker could not take it yet
+                    with self.mt5_lock:
+                        ps = [p for p in (self.ex._position(t) for t in rec["be_retry"]) if p]
+                        left = self.ex.move_to_be_now(ps, self._be_warned)
+                    self.store.update(chat_id, msg_id, be_retry=left)
+                if rec.get("be_done") or not rec.get("tickets"): continue
                 if not C.channel_settings(self.cfg, chat_id).get("be_after_tp1", False): continue
                 with self.mt5_lock:
                     done = self.ex.check_break_even(rec, self._st(chat_id), self._be_warned)
@@ -399,8 +427,10 @@ class Engine:
         if not rec:
             self.log(f"[{self._name(chat_id)}] {cmd.action.replace('_', ' ').lower()}: no copied trades belong to that signal, nothing to do"); return
         self.log(f"[{self._name(chat_id)}] instruction {cmd.action.replace('_', ' ').lower()} for trades {', '.join(map(str, rec['tickets']))}")
+        if not hasattr(self, "_be_warned"): self._be_warned = set()
         with self.mt5_lock:
-            self.ex.apply(cmd, rec["tickets"], st)
+            retry = self.ex.apply(cmd, rec["tickets"], st, self._be_warned) or []
+        if retry: self.store.update(chat_id, msg_id, be_retry=retry)   # the 5 second loop tries again
 
     async def _on_new(self, ev):
         try:
@@ -414,6 +444,11 @@ class Engine:
                          f"{' to ' + str(parsed.entry_high) if parsed.entry_high else ''}, stop loss {parsed.sl or 'none'}, take profits {', '.join(map(str, parsed.tps)) or 'none'}")
                 self._open(chat, ev.id, parsed, st); return
             if reply_id:
+                if parsed is None:
+                    sig = await self._signal_from_reply(ev, chat, reply_id, text)
+                    if sig:
+                        self._log_signal(chat, sig, "reply completes the signal")
+                        self._open(chat, ev.id, sig, st, parent_id=reply_id); return
                 cmd = parsed if isinstance(parsed, Command) else parse_update(text)
                 if cmd: self._apply(chat, reply_id, cmd, st)
                 return
@@ -433,6 +468,11 @@ class Engine:
                 if isinstance(parsed, Signal):      # signal completed by an edit
                     self.log(f"[{self._name(chat)}] edited message is now a signal")
                     self._open(chat, ev.id, parsed, st)
+                elif parsed is None and getattr(ev.message, "reply_to_msg_id", None):
+                    sig = await self._signal_from_reply(ev, chat, ev.message.reply_to_msg_id, text)
+                    if sig:                          # an edited reply now holds the full signal
+                        self._log_signal(chat, sig, "edited reply completes the signal")
+                        self._open(chat, ev.id, sig, st, parent_id=ev.message.reply_to_msg_id)
                 return
             if isinstance(parsed, Signal):
                 if parsed.sl != rec.get("sl") or parsed.tps != rec.get("tps"):

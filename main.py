@@ -445,6 +445,7 @@ class App:
     def __init__(self, root):
         self.root = root; root.title(f"{BRAND_NAME}  v{__version__}"); root.geometry("860x560"); root.minsize(640, 420)
         self.q = queue.Queue(); self.engine = None; self.tray = None
+        self._starting = False; self._restart_pending = False   # only one start or restart at a time
         try: ttk.Style().theme_use("vista" if sys.platform == "win32" else "clam")
         except tk.TclError: pass
         head = ttk.Frame(root, padding=(12, 10)); head.pack(fill="x")
@@ -630,6 +631,7 @@ class App:
             def done():
                 self._licence_waiting = None
                 if r is None:
+                    if w["blocking"]: self._starting = False
                     self.set_status("licence", None, "Not checked"); self.log("Stopped waiting for the licence check.")
                     if w["blocking"] and not (self.engine and self.engine.running()): self.set_running(False)
                     return
@@ -669,14 +671,20 @@ class App:
         self.state_lbl.configure(text="Copying" if on else "Stopped", foreground=GREEN if on else RED)
 
     def start(self):
+        """Never runs two copiers: refuses while one runs AND while a start is still on its way
+        (the licence check runs before the copier exists)."""
         if self.engine and self.engine.running(): return
+        if getattr(self, "_starting", False): return
         cfg = C.load()
         if W.needs_setup(cfg):
             messagebox.showinfo("Setup", "Please finish the setup first."); Wizard(self); return
+        self._starting = True
         self.btn_start["state"] = "disabled"; self.log("Checking your licence...")
         def go(ok, msg):
+            self._starting = False
             if not ok:
                 self.btn_start["state"] = "normal"; messagebox.showerror("Licence", msg); return
+            if self.engine and self.engine.running(): return
             from copier.engine import Engine
             self.engine = Engine(self.log, self.ask, self.set_status); self.engine.start(); self.set_running(True)
             self.log("Starting... connecting to MetaTrader 5 and Telegram.")
@@ -685,7 +693,8 @@ class App:
     def stop(self):
         w = getattr(self, "_licence_waiting", None)
         if w and w["blocking"] and not w["cancel"]:
-            w["cancel"] = True; w["then"] = None
+            w["cancel"] = True; w["then"] = None; self._starting = False
+        self._restart_pending = False            # Stop also cancels a restart that is still waiting
         if self.engine and self.engine.running(): self.engine.stop(); self.log("Stopping...")
 
     def settings_saved(self, cfg):
@@ -698,10 +707,17 @@ class App:
                 self.log("New settings are used from the next signal.")
 
     def restart(self):
-        eng = self.engine; eng.stop()
+        """Overlapping restarts (for example saving the channel list twice quickly) collapse into one.
+        The single restart reads the newest settings when it starts."""
+        if getattr(self, "_restart_pending", False): return
+        self._restart_pending = True
+        eng = self.engine
+        if eng: eng.stop()
         def wait():
-            if eng.running(): self.root.after(300, wait)
-            else: self.start()
+            if not self._restart_pending: return            # Stop was clicked meanwhile
+            if (eng and eng.running()) or getattr(self, "_starting", False):
+                self.root.after(300, wait); return
+            self._restart_pending = False; self.start()
         self.root.after(300, wait)
 
     def open_data(self):

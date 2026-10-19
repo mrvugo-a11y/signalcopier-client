@@ -217,6 +217,32 @@ class Executor:
                 if abs(d.price - tp1) <= max(pt * 2, 1e-9): return True
         return False
 
+    @staticmethod
+    def _norm(price, info):
+        """Rounds a price to the symbol's tick size and digits (brokers reject unrounded stops)."""
+        ts = getattr(info, "trade_tick_size", 0) or info.point
+        return round(round(price / ts) * ts, info.digits)
+
+    def _be_blocker(self, p, info, tick):
+        """None when a break even stop is allowed right now, otherwise a plain reason.
+        A BUY stop must be below the bid and a SELL stop above the ask, at least the broker's stop level
+        away; inside the freeze level the broker refuses any change (code 10016, Invalid stops)."""
+        pt = info.point
+        buy = p.type == mt5.POSITION_TYPE_BUY
+        be = self._norm(p.price_open, info)
+        now = tick.bid if buy else tick.ask
+        gap = (now - be) if buy else (be - now)
+        need = max(getattr(info, "trade_stops_level", 0) or 0, getattr(info, "trade_freeze_level", 0) or 0) * pt
+        if gap <= 0:
+            return "price is " + ("below" if buy else "above") + " entry, the trade is not in profit yet"
+        if gap < need:
+            return "price is too close to entry for your broker's minimum stop distance"
+        if p.tp:                                        # the existing take profit must not sit inside the freeze level
+            fl = (getattr(info, "trade_freeze_level", 0) or 0) * pt
+            if fl and abs(p.tp - now) <= fl:
+                return "price is too close to the take profit for your broker to accept a change"
+        return None
+
     def _move_to_be(self, p, warned):
         """Moves one position's stop loss to its entry price, respecting the broker's minimum stop distance.
         Returns True when done (or nothing to do), False to try again later."""
@@ -225,30 +251,30 @@ class Executor:
         if p.sl and ((buy and p.sl >= entry) or (not buy and p.sl <= entry)):
             return True                                       # already at break even or better
         info = mt5.symbol_info(p.symbol); tick = mt5.symbol_info_tick(p.symbol)
-        pt = info.point; digits = info.digits
-        min_dist = (getattr(info, "trade_stops_level", 0) or 0) * pt
-        now = tick.bid if buy else tick.ask
-        gap = (now - entry) if buy else (entry - now)
-        if gap < min_dist or gap <= 0:
+        why = self._be_blocker(p, info, tick)
+        if why:
             if p.ticket not in warned:
                 warned.add(p.ticket)
-                why = ("the price is too close to the entry for your broker's minimum stop distance"
-                       if gap > 0 else "the price is now on the wrong side of the entry")
-                self.log(f"Could not move the stop loss of trade {p.ticket} ({p.symbol}) to break even yet, because {why}. "
-                         "The copier will keep trying.")
+                self.log(f"Could not move the stop loss of trade {p.ticket} ({p.symbol}) to break even: {why}. "
+                         "Will retry when possible.")
             return False
         req = {"action": mt5.TRADE_ACTION_SLTP, "position": p.ticket, "symbol": p.symbol,
-               "sl": round(entry, digits), "tp": p.tp}
+               "sl": self._norm(entry, info), "tp": p.tp}
         r = mt5.order_send(req)
         if r is None or r.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
             if p.ticket not in warned:
                 warned.add(p.ticket)
                 why = r.comment if r is not None else "no answer from MetaTrader 5"
                 self.log(f"Your broker refused to move the stop loss of trade {p.ticket} ({p.symbol}) to break even: {why}. "
-                         "The copier will keep trying.")
+                         "Will retry when possible.")
             return False
-        self.log(f"TP1 was hit, so the stop loss of trade {p.ticket} ({p.symbol}) was moved to break even at {req['sl']}")
+        warned.discard(p.ticket)
+        self.log(f"Stop loss of trade {p.ticket} ({p.symbol}) was moved to break even at {req['sl']}")
         return True
+
+    def move_to_be_now(self, positions, warned):
+        """For a channel 'move SL to BE' instruction. Returns the tickets that still need a retry."""
+        return [p.ticket for p in positions if not self._move_to_be(p, warned)]
 
     def check_break_even(self, rec, st, warned=None):
         """Called regularly for each copied signal. Returns True when this signal needs no more checking.
@@ -275,11 +301,13 @@ class Executor:
         if not rest: return True
         return all([self._move_to_be(p, warned) for p in rest])
 
-    def apply(self, cmd: Command, tickets, st):
+    def apply(self, cmd: Command, tickets, st, warned=None):
+        """Returns a list of position tickets whose break even move must be retried later (may be empty)."""
+        if warned is None: warned = set()
         positions = [p for p in (self._position(t) for t in tickets) if p]
         orders = [o for o in (self._order(t) for t in tickets) if o]
         if not positions and not orders:
-            self.log(f"{cmd.action.replace('_', ' ').lower()}: no open trades left for this signal"); return
+            self.log(f"{cmd.action.replace('_', ' ').lower()}: no open trades left for this signal"); return []
         a = cmd.action
         if a == "CLOSE_ALL":
             for p in positions: self._close(p)
@@ -294,8 +322,9 @@ class Executor:
             else:
                 for p in positions: self._close(p, frac)
         elif a == "MOVE_SL_BE":
-            for p in positions: self._modify(p, sl=p.price_open)
-            for o in orders: self._modify_order(o, sl=o.price_open)
+            if orders:   # a stop loss equal to the open price is never valid on a pending order
+                self.log(f"Break even skipped for {len(orders)} pending order(s): they have not opened yet.")
+            return self.move_to_be_now(positions, warned)
         elif a == "MOVE_SL":
             for p in positions: self._modify(p, sl=cmd.value)
             for o in orders: self._modify_order(o, sl=cmd.value)
@@ -303,8 +332,9 @@ class Executor:
             act = st.get("tp_hit_action", "none")
             if act == "move_sl_be": act = "none"            # old choice, the tick box decides now
             be = st.get("be_after_tp1", False)
+            retry = []
             if be and act == "none":
-                for p in positions: self._modify(p, sl=p.price_open)
+                retry = self.move_to_be_now(positions, warned)
             elif not be and act == "none":
                 self.log("The channel says a take profit was hit. Stop loss left as it is, because the break even tick box in Settings is off.")
             if act == "close_half":
@@ -313,6 +343,7 @@ class Executor:
                 for p in positions: self._close(p)
             if act != "none" or be:
                 for o in orders: self._cancel(o)   # TP already reached -> pending entries are stale
+            return retry
         elif a == "SL_HIT":
             for p in positions: self._close(p)
             for o in orders: self._cancel(o)
@@ -324,3 +355,4 @@ class Executor:
                     tp = cmd.tps[min(i, len(cmd.tps) - 1)] if len(items) > 1 else cmd.tps[0]
                 fn = self._modify if it in positions else self._modify_order
                 fn(it, sl=cmd.sl, tp=tp)
+        return []

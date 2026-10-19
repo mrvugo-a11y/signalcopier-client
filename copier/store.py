@@ -60,14 +60,26 @@ class Store:
             self.data.setdefault("trade_ids", {})[f"{chat_id}:{trade_id}"] = msg_id
             self._save()
 
+    def _key(self, chat_id, msg_id):
+        k = f"{chat_id}:{msg_id}"
+        return self.data.get("aliases", {}).get(k, k)
+
+    def alias(self, chat_id, msg_id, real_msg_id):
+        """Replies to msg_id (a short parent like 'XAUUSD BUY NOW') use the trades opened from real_msg_id."""
+        k = f"{chat_id}:{msg_id}"
+        if k in self.data["signals"]: return
+        with self.lock:
+            self.data.setdefault("aliases", {})[k] = f"{chat_id}:{real_msg_id}"
+            self._save()
+
     def get(self, chat_id, msg_id):
-        return self.data["signals"].get(f"{chat_id}:{msg_id}")
+        return self.data["signals"].get(self._key(chat_id, msg_id))
 
     def last_id(self, chat_id):
         return self.data["last"].get(str(chat_id))
 
     def update(self, chat_id, msg_id, **kw):
         with self.lock:
-            r = self.data["signals"].get(f"{chat_id}:{msg_id}")
+            r = self.data["signals"].get(self._key(chat_id, msg_id))
             if r is not None:
                 r.update(kw); self._save()
