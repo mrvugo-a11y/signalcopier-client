@@ -242,6 +242,28 @@ def list_channels(cfg, ask):
     return login_and_list(cfg, ask)[1]
 
 
+def _cross_chat(msg):
+    """Reply to a message in another chat (Telegram cross-chat reply / quote from another channel)."""
+    r = getattr(msg, "reply_to", None)
+    return bool(getattr(msg, "reply_to_peer_id", None) or (r is not None and getattr(r, "reply_to_peer_id", None)))
+
+
+def _strip_quote(msg, text):
+    """Drop the quoted part of the parent if the client rendered it into the text."""
+    r = getattr(msg, "reply_to", None)
+    q = getattr(r, "quote_text", None) if r is not None else None
+    if q and q in text:
+        text = text.replace(q, " ")
+    return text
+
+
+def _reply_may_open(msg, sig):
+    """A reply opens a trade only when it is its own complete signal (entry price or explicit side,
+    plus SL/TP), is not a status/result, and does not point at another chat."""
+    if _cross_chat(msg): return False
+    return sig.sl is not None or bool(sig.tps)
+
+
 class Engine:
     def __init__(self, log, ask, status=lambda kind, ok, text: None):
         self.log, self.ask, self.status = log, ask, status
@@ -436,15 +458,21 @@ class Engine:
         try:
             text, chat, st = ev.raw_text or "", ev.chat_id, self._st(ev.chat_id)
             if not st.get("enabled", True): return
-            parsed = parse(text)
             reply_id = ev.message.reply_to_msg_id
+            text = _strip_quote(ev.message, text)
+            parsed = parse(text)
+            if reply_id and isinstance(parsed, Signal) and not _reply_may_open(ev.message, parsed):
+                parsed = None   # a reply only opens when it holds its own full signal, never from a quote
+            if reply_id and isinstance(parsed, Signal) and self.store.get(chat, reply_id):
+                self.log(f"[{self._name(chat)}] reply repeats a signal that was already copied, treating it as an update")
+                parsed = Command("MODIFY", sl=parsed.sl, tps=parsed.tps)
             if isinstance(parsed, Signal):
                 self.log(f"[{self._name(chat)}] SIGNAL received: {parsed.side} {parsed.symbol}"
                          f"{' ' + parsed.order_type if parsed.order_type and parsed.order_type.upper() != 'MARKET' else ''}, entry {parsed.entry or 'now'}"
                          f"{' to ' + str(parsed.entry_high) if parsed.entry_high else ''}, stop loss {parsed.sl or 'none'}, take profits {', '.join(map(str, parsed.tps)) or 'none'}")
                 self._open(chat, ev.id, parsed, st); return
             if reply_id:
-                if parsed is None:
+                if parsed is None and not _cross_chat(ev.message):
                     sig = await self._signal_from_reply(ev, chat, reply_id, text)
                     if sig:
                         self._log_signal(chat, sig, "reply completes the signal")
@@ -461,14 +489,17 @@ class Engine:
         try:
             chat, st = ev.chat_id, self._st(ev.chat_id)
             if not st.get("follow_edits", True) or not st.get("enabled", True): return
-            text = ev.raw_text or ""
+            text = _strip_quote(ev.message, ev.raw_text or "")
             rec = self.store.get(chat, ev.id)
             parsed = parse(text)
+            if rec is None and getattr(ev.message, "reply_to_msg_id", None) and isinstance(parsed, Signal) \
+                    and not _reply_may_open(ev.message, parsed):
+                parsed = None
             if rec is None:
                 if isinstance(parsed, Signal):      # signal completed by an edit
                     self.log(f"[{self._name(chat)}] edited message is now a signal")
                     self._open(chat, ev.id, parsed, st)
-                elif parsed is None and getattr(ev.message, "reply_to_msg_id", None):
+                elif parsed is None and getattr(ev.message, "reply_to_msg_id", None) and not _cross_chat(ev.message):
                     sig = await self._signal_from_reply(ev, chat, ev.message.reply_to_msg_id, text)
                     if sig:                          # an edited reply now holds the full signal
                         self._log_signal(chat, sig, "edited reply completes the signal")
