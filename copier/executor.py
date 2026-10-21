@@ -55,23 +55,53 @@ class Executor:
         return mt5.ORDER_FILLING_RETURN
 
     def _lot(self, symbol, info, side, entry, sl, n_parts, st):
-        if st.get("lot_mode", "fixed") == "risk" and sl:
+        """Volume of each part (one per take profit). Returns a list of n_parts volumes.
+        Risk mode: the money at risk is in the account currency (ZAR, USD, ...) and so is the loss
+        MetaTrader 5 reports, so no conversion is needed. The total is worked out in volume steps and
+        spread over the parts (0.05 over 3 parts gives 0.02, 0.02, 0.01) instead of rounding every
+        part down to the minimum lot, which turned most risk trades into 0.01 lots."""
+        step = float(info.volume_step or 0.01)
+        vmin = float(info.volume_min or step); vmax = float(info.volume_max or 0) or float("inf")
+        mode = str(st.get("lot_mode", "fixed") or "fixed").strip().lower()
+        if mode in ("risk", "percent", "risk_percent", "percent of my balance"):
+            mode = "risk"
+        n_parts = max(1, int(n_parts))
+        steps = lambda v: int(math.floor(float(v) / step + 1e-6))
+        if mode == "risk" and not sl:
+            self.log(f"{symbol}: the signal has no stop loss, so the percent of balance lot size cannot be worked out. "
+                     f"Using the fixed lot size {st.get('fixed_lot', 0.01)} instead. Set a stop loss for signals without one under Settings.")
+        if mode == "risk" and sl:
             acc = mt5.account_info()
-            risk_money = acc.balance * float(st.get("risk_percent", 1)) / 100.0
+            cur = getattr(acc, "currency", "") or ""
+            risk_money = float(acc.balance) * float(st.get("risk_percent", 1) or 0) / 100.0
             otype = mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL
-            loss1 = mt5.order_calc_profit(otype, symbol, 1.0, entry, sl)
-            if loss1 is None or loss1 == 0:
-                ticks = abs(entry - sl) / info.trade_tick_size
-                loss1 = ticks * info.trade_tick_value
-            total = risk_money / abs(loss1) if loss1 else info.volume_min
-            lot = total / n_parts
+            loss1 = None
+            try: loss1 = mt5.order_calc_profit(otype, symbol, 1.0, entry, sl)
+            except Exception: loss1 = None
+            if not loss1:
+                tv = getattr(info, "trade_tick_value_loss", 0) or info.trade_tick_value
+                loss1 = abs(entry - sl) / info.trade_tick_size * tv if info.trade_tick_size else 0
+            loss1 = abs(float(loss1 or 0))
+            if not loss1:
+                self.log(f"{symbol}: could not work out the loss per lot, using the smallest lot {vmin}.")
+                return [round(vmin, 8)] * n_parts
+            want = risk_money / loss1
+            total = steps(want)
+            min_steps = max(1, int(round(vmin / step)))
+            if total < min_steps * n_parts:
+                self.log(f"{symbol}: risking {st.get('risk_percent')} percent ({risk_money:.2f} {cur}) with this stop loss "
+                         f"allows {want:.4f} lots, but each of the {n_parts} trades needs at least {vmin} lots "
+                         f"({vmin * loss1:.2f} {cur} at risk per trade). Opening the smallest lot size.")
+                return [round(vmin, 8)] * n_parts
+            base, extra = divmod(total, n_parts)
+            parts = [(base + (1 if i < extra else 0)) * step for i in range(n_parts)]
+            self.log(f"{symbol}: lot size from {st.get('risk_percent')} percent of {acc.balance} {cur} = {risk_money:.2f} {cur}, "
+                     f"{loss1:.2f} {cur} loss per lot, {total * step:.2f} lots in total.")
         else:
-            lot = float(st.get("fixed_lot", 0.01))
+            lot = float(st.get("fixed_lot", 0.01) or 0.01)
             if st.get("fixed_lot_is_total"): lot /= n_parts
-        step = info.volume_step or 0.01
-        lot = math.floor(lot / step + 1e-9) * step
-        lot = max(info.volume_min, min(info.volume_max, lot))
-        return round(lot, 8)
+            parts = [steps(lot) * step] * n_parts
+        return [round(max(vmin, min(vmax, v)), 8) for v in parts]
 
     def _send(self, req):
         r = mt5.order_send(req)
@@ -140,7 +170,7 @@ class Executor:
         chosen = [tp for i, tp in enumerate(tps, 1) if i in use] or tps[:1]
         if not st.get("split_tps", True):
             chosen = chosen[:1]
-        lot = self._lot(symbol, info, side, ref, sl, len(chosen), st)
+        lots = self._lot(symbol, info, side, ref, sl, len(chosen), st)
 
         type_map = {("BUY", "MARKET"): mt5.ORDER_TYPE_BUY, ("SELL", "MARKET"): mt5.ORDER_TYPE_SELL,
                     ("BUY", "LIMIT"): mt5.ORDER_TYPE_BUY_LIMIT, ("SELL", "LIMIT"): mt5.ORDER_TYPE_SELL_LIMIT,
@@ -148,6 +178,7 @@ class Executor:
         self.last_tp1 = tps[0] if tps and tps[0] else None   # TP1 price, used by the break even watcher
         tickets = []
         for i, tp in enumerate(chosen, 1):
+            lot = lots[i - 1]
             req = {"action": mt5.TRADE_ACTION_DEAL if otype == "MARKET" else mt5.TRADE_ACTION_PENDING,
                    "symbol": symbol, "volume": lot, "type": type_map[(side, otype)],
                    "price": round(ref, digits), "deviation": int(st.get("slippage_points", 20)),

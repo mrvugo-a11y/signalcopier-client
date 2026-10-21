@@ -40,8 +40,8 @@ class ExecTests(unittest.TestCase):
     def test_split_risk_suffix(self):
         t = self.ex.open_signal(parse("GOLD BUY 1950 SL 1940 TP1 1955 TP2 1960"), ST)
         self.assertEqual(len(t), 2)
-        # market ask 1950.20, SL 1940 -> 10.20 risk * 100/lot; 1% of 10000 = 100 USD -> 0.098 total -> 0.049 each, rounded DOWN to 0.04
-        self.assertEqual([r["volume"] for r in self.m.sent], [0.04, 0.04])
+        # market ask 1950.20, SL 1940 -> 10.20 risk * 100/lot; 1% of 10000 = 100 USD -> 0.098 total -> total rounded DOWN to 0.09, spread 0.05 + 0.04
+        self.assertEqual([r["volume"] for r in self.m.sent], [0.05, 0.04])
         self.assertEqual(self.m.sent[0]["symbol"], "XAUUSDm")
         self.assertEqual([r["tp"] for r in self.m.sent], [1955, 1960])
 
